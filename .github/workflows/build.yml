@@ -1,0 +1,50 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ساخت APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: برداشت کد
+        uses: actions/checkout@v4
+
+      - name: نصب JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: تنظیم Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+
+      - name: کش کردن وابستگی‌ها
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/caches/build-cache-1
+            ~/.gradle/caches/8.14.3
+          key: gradle-${{ hashFiles('**/*.gradle.kts') }}
+          restore-keys: gradle-
+
+      - name: ساخت APK دیباگ
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: ساخت APK ریلیز
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: بارگذاری APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-mobile-apk
+          path: app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
