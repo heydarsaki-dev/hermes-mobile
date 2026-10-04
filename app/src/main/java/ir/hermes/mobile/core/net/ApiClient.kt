@@ -37,18 +37,30 @@ class ApiClient(
         .retryOnConnectionFailure(true)
         .build()
 
+    /** نرمال‌سازی آدرس: حذف فاصله‌های اضافی و افزودن اسکیما در صورت نبود */
+    private val safeBase: String
+        get() {
+            var b = baseUrl.trim().trimEnd('/')
+            if (b.isBlank()) b = "http://127.0.0.1:8080"
+            if (!b.startsWith("http://", true) && !b.startsWith("https://", true)) b = "http://$b"
+            return b
+        }
+
     /** ساخت URL با پاکسازی نویسه انتهایی و افزودن مسیر */
     private fun url(path: String): String {
-        val b = baseUrl.trimEnd('/')
         val p = if (path.startsWith("/")) path else "/$path"
-        return "$b$p"
+        return safeBase + p
     }
+
+    /** حذف نویسه‌های کنترلی/فاصله که هدر HTTP را خراب می‌کنند (علت کرش) */
+    fun cleanToken(raw: String): String = raw.trim().filter { it.code in 33..126 }
 
     fun request(path: String, method: String = "GET", body: JsonObject? = null): Request {
         val builder = Request.Builder().url(url(path))
-        if (token.isNotBlank()) {
-            builder.header("X-Hermes-Session-Token", token)
-            builder.header("Authorization", "Bearer $token")
+        val t = cleanToken(token)
+        if (t.isNotBlank()) {
+            builder.header("X-Hermes-Session-Token", t)
+            builder.header("Authorization", "Bearer $t")
         }
         when (method.uppercase()) {
             "GET" -> builder.get()
@@ -68,17 +80,44 @@ class ApiClient(
                     if (text.isBlank()) return@use JsonObject(emptyMap())
                     Json.parseToJsonElement(text)
                 }
+            }.recoverCatching { e ->
+                // خطاهای ساخت URL/هدر (مثل توکن دارای نویسه کنترلی) نباید اپ را بترکانند
+                throw friendly(e)
             }
         }
 
+    /** تبدیل استثنای خام به پیام فارسی قابل فهم */
+    private fun friendly(e: Throwable): Throwable = when (e) {
+        is ApiException -> e
+        is java.net.UnknownHostException -> IllegalArgumentException("دامنه پیدا نشد — آدرس را بررسی کنید")
+        is java.net.ConnectException -> IllegalArgumentException("اتصال برقرار نشد — سرور در حال اجرا نیست یا آدرس اشتباه است")
+        is java.net.SocketTimeoutException -> IllegalArgumentException("زمان پاسخ سرور به پایان رسید")
+        is java.net.UnknownServiceException -> IllegalArgumentException("سرویس شبکه در دسترس نیست")
+        is IllegalArgumentException -> IllegalArgumentException("آدرس یا توکن نامعتبر است")
+        else -> e
+    }
+
     /** بررسی اتصال و اعتبار توکن */
     suspend fun ping(): Result<JsonElement> = call("/api/status")
+
+    /**
+     * گرفتن تیکت تک‌بارمصرف برای ارتقای WebSocket.
+     * در حالت loopback هرمس تیکت لازم ندارد و ?token= کافی است؛
+     * این متد برای حالت احراز هویت داشبورد است.
+     */
+    suspend fun wsTicket(): Result<String> =
+        call("/api/auth/ws-ticket", "POST", JsonObject(emptyMap())).mapCatching { el ->
+            val o = el as? JsonObject ?: error("پاسخ نامعتبر")
+            (o["ticket"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                ?: error("تیکت در پاسخ یافت نشد")
+        }
 
     fun humanError(code: Int): String = when (code) {
         401 -> "توکن نامعتبر است یا منقضی شده"
         403 -> "دسترسی مجاز نیست"
         404 -> "مسیر یافت نشد — آدرس سرور را بررسی کنید"
         408, 504 -> "زمان سرور به پایان رسید"
+        426 -> "این آدرس وب‌سوکت را پشتیبانی نمی‌کند"
         in 500..599 -> "خطای سرور ($code)"
         else -> "خطای شبکه ($code)"
     }

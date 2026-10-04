@@ -7,6 +7,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.util.concurrent.atomic.AtomicLong
+import java.net.URLEncoder
 
 sealed interface RpcEvent {
     data class Event(val type: String, val payload: JsonObject, val sid: String?) : RpcEvent
@@ -36,12 +37,24 @@ class HermesSocket(
     fun connect() {
         disconnect()
         _status.value = RpcEvent.State.CONNECTING
-        val q = if (api.token.isNotBlank()) "?token=${api.token}" else ""
-        val req = Request.Builder()
-            .url(api.wsUrl("/api/ws") + q)
-            .header("X-Hermes-Session-Token", api.token)
-            .build()
-        socket = api.clientForSocket().newWebSocket(req, object : WebSocketListener() {
+        // توکن باید در کوئری URL-encoding شود؛ کاراکترهای خاص (فاصله/خط جدید) باعث کرش می‌شدند
+        val q = if (api.token.isNotBlank()) "?token=" + URLEncoder.encode(api.token.trim(), "UTF-8") else ""
+        val target = runCatching { api.wsUrl("/api/ws") + q }.getOrElse {
+            _status.value = RpcEvent.State.FAILED
+            onLog("آدرس وب‌سوکت نامعتبر: ${it.message}")
+            return
+        }
+        val req = runCatching {
+            Request.Builder()
+                .url(target)
+                .header("X-Hermes-Session-Token", api.cleanToken(api.token))
+                .build()
+        }.getOrElse {
+            _status.value = RpcEvent.State.FAILED
+            onLog("ساخت درخواست ناموفق: ${it.message}")
+            return
+        }
+        socket = runCatching { api.clientForSocket().newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, r: Response) {
                 _status.value = RpcEvent.State.CONNECTED
                 onLog("متصل شد")
@@ -57,7 +70,11 @@ class HermesSocket(
                 _status.value = RpcEvent.State.FAILED
                 onLog("قطع اتصال: ${t.message}")
             }
-        })
+        }) }.getOrElse {
+            _status.value = RpcEvent.State.FAILED
+            onLog("اتصال ناموفق: ${it.message}")
+            return
+        }
     }
 
     private fun parse(text: String) {

@@ -4,6 +4,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 
 private val DarkScheme = darkColorScheme(
     primary = Gold,
@@ -49,8 +50,12 @@ fun HermesTheme(
     if (!view.isInEditMode) {
         androidx.compose.runtime.SideEffect {
             val w = view.context as? android.app.Activity ?: return@SideEffect
-            w.window.statusBarColor = scheme.background.value.toInt()
-            w.window.navigationBarColor = scheme.background.value.toInt()
+            // Color.value یک ULong است؛ تبدیل مستقیم با toInt() رنگ را خراب می‌کند.
+            // استفاده از toArgb() تنها راه امن برای ست کردن رنگ سیستم‌بار است.
+            runCatching {
+                w.window.statusBarColor = scheme.background.toArgb()
+                w.window.navigationBarColor = scheme.background.toArgb()
+            }
         }
     }
     MaterialTheme(

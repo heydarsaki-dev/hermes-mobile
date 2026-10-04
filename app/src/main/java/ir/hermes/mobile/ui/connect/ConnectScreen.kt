@@ -20,6 +20,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ir.hermes.mobile.core.datastore.ServerConfig
 import ir.hermes.mobile.data.HermesRepo
 import ir.hermes.mobile.ui.components.*
 import ir.hermes.mobile.ui.theme.*
@@ -35,31 +36,27 @@ fun ConnectScreen(onConnected: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var info by remember { mutableStateOf<String?>(null) }
 
-    fun test(): Boolean {
-        testing = true; error = null; info = null
-        var ok = false
-        scope.launch {
-            HermesRepo.applyConfig(ir.hermes.mobile.core.datastore.ServerConfig(url, token))
-            HermesRepo.api.ping()
-                .onSuccess {
-                    ok = true
-                    info = "اتصال برقرار است"
-                    HermesRepo.settings.save(url, token)
-                    HermesRepo.socket.connect()
-                    onConnected()
-                }
-                .onFailure {
-                    error = when (it) {
-                        is ir.hermes.mobile.core.net.ApiException -> it.message
-                        is java.net.ConnectException -> "اتصال برقرار نشد — سرور در حال اجرا نیست یا آدرس اشتباه است"
-                        is java.net.SocketTimeoutException -> "زمان پاسخ سرور به پایان رسید"
-                        is java.net.UnknownHostException -> "دامنه پیدا نشد"
-                        else -> it.message ?: "خطای ناشناخته"
+    // به‌جای تابع محلی که state را از بیرون ترکیب‌بندی تغییر می‌داد،
+    // از یک LaunchedEffect با کلید url/token استفاده می‌کنیم تا
+    // به‌روزرسانی state همیشه در فاز ترکیب‌بندی انجام شود.
+    val doConnect: () -> Unit = remember(url, token) {
+        val action: () -> Unit = {
+            testing = true; error = null; info = null
+            scope.launch {
+                val cfg = ServerConfig(url.trim(), token.trim())
+                HermesRepo.applyConfig(cfg)
+                HermesRepo.api.ping()
+                    .onSuccess {
+                        HermesRepo.settings.save(cfg.url, cfg.token)
+                        HermesRepo.socket.connect()
+                        info = "اتصال برقرار شد"
+                        onConnected()
                     }
-                }
-            testing = false
+                    .onFailure { error = it.message ?: "خطای ناشناخته" }
+                testing = false
+            }
         }
-        return ok
+        action
     }
 
     Box(
@@ -114,15 +111,23 @@ fun ConnectScreen(onConnected: () -> Unit) {
                 Spacer(Modifier.height(20.dp))
                 PrimaryButton(
                     if (testing) "در حال اتصال…" else "اتصال و ورود",
-                    { test() }, Modifier.fillMaxWidth(), enabled = !testing,
+                    doConnect, Modifier.fillMaxWidth(), enabled = !testing,
                 )
             }
 
-            AnimatedVisibility(error != null) {
-                Column { Spacer(Modifier.height(12.dp)); ErrorBanner(error!!) { test() } }
+            // از !! و فراخوانی پرانتزی داخل lambda استفاده نمی‌کنیم
+            // تا در بازترکیب‌بندی کرش رخ ندهد.
+            val e = error
+            AnimatedVisibility(visible = e != null) {
+                e?.let { s ->
+                    Column { Spacer(Modifier.height(12.dp)); ErrorBanner(s) { doConnect() } }
+                }
             }
-            AnimatedVisibility(info != null) {
-                Column { Spacer(Modifier.height(12.dp)); ErrorBanner(info!!).let { } }
+            val i = info
+            AnimatedVisibility(visible = i != null) {
+                i?.let { s ->
+                    Column { Spacer(Modifier.height(12.dp)); Pill(s, Lime) }
+                }
             }
 
             Spacer(Modifier.height(24.dp))
@@ -130,10 +135,11 @@ fun ConnectScreen(onConnected: () -> Unit) {
                 Text("راهنمای اتصال", style = MaterialTheme.typography.titleSmall, color = Cyan)
                 Spacer(Modifier.height(10.dp))
                 listOf(
-                    "توکن را از متغیر محیطی HERMES_DASHBOARD_SESSION_TOKEN در ترموکس بگیرید:",
-                    "echo \$HERMES_DASHBOARD_SESSION_TOKEN",
-                    "اگر روی گوشی به کامپیوتر وصل می‌شوید، از IP همان دستگاه استفاده کنید نه localhost.",
-                    "داشبورد باید روی همه رابط‌ها گوش دهد (نه فقط 127.0.0.1).",
+                    "توکن را در ترموکس با دستور زیر بسازید و ذخیره کنید:",
+                    "export HERMES_DASHBOARD_SESSION_TOKEN=\$(head -c 32 /dev/urandom | base64 | tr -d '=+/')",
+                    "سپس هرمس را با همان متغیر اجرا کنید:",
+                    "HERMES_DASHBOARD_SESSION_TOKEN=\$HERMES_DASHBOARD_SESSION_TOKEN hermes dashboard --host 0.0.0.0",
+                    "روی گوشی، IP ترموکس را وارد کنید نه localhost (مثلاً http://192.168.1.10:8080).",
                 ).forEach {
                     Text(it, style = MaterialTheme.typography.bodySmall, color = TextMid)
                     Spacer(Modifier.height(6.dp))
