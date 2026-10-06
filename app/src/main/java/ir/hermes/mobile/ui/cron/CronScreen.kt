@@ -3,7 +3,7 @@ package ir.hermes.mobile.ui.cron
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -35,7 +35,7 @@ fun CronScreen(onBack: () -> Unit) {
     suspend fun load() {
         loading = true; error = null
         HermesRepo.cronList()
-            .onSuccess { items = J.listOf(J.obj(it), "jobs", "items", "cron").map { o -> J.obj(it) } }
+            .onSuccess { r -> items = J.listOf(J.obj(r), "jobs", "items", "cron").map { J.obj(it) } }
             .onFailure { error = it.message }
         loading = false
     }
@@ -53,7 +53,11 @@ fun CronScreen(onBack: () -> Unit) {
                 EmptyState("کار زمان‌بندی‌شده‌ای وجود ندارد", Icons.Default.Schedule)
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(items, key = { J.str(it, "name", J.str(it, "id")) }) { c ->
+                    // کلید یکتا (وگرنه نام‌های خالی/تکراری باعث کرش LazyColumn می‌شد)
+                    itemsIndexed(
+                        items,
+                        key = { i, c -> "$i:${J.str(c, "name", J.str(c, "id"))}" },
+                    ) { _, c ->
                         Row(
                             Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
                                 .background(MaterialTheme.colorScheme.surface).padding(14.dp),

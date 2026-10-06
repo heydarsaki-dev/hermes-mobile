@@ -1,8 +1,8 @@
 package ir.hermes.mobile.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 
@@ -42,7 +42,12 @@ private val LightScheme = lightColorScheme(
 
 @Composable
 fun HermesTheme(
-    dark: Boolean = isSystemInDarkTheme(),
+    // این اپ عمداً دارک طراحی شده و همه‌ی پس‌زمینه‌ها با رنگ‌های تیرهٔ Ink
+    // ساخته شده‌اند (گرادیان‌ها، کارت‌های شیشه‌ای و ترمینال). اگر از حالت
+    // سیستم تبعیت کنیم، وقتی گوشی در حالت روشن باشد اسکیمای روشن انتخاب
+    // می‌شود؛ آن‌وقت رنگ متن‌ها تیره (Ink1) می‌شود و روی پس‌زمینهٔ تیره
+    // کاملاً ناپدید می‌شوند. پس تم تیره را همیشه اعمال می‌کنیم.
+    dark: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val scheme = if (dark) DarkScheme else LightScheme
@@ -58,9 +63,16 @@ fun HermesTheme(
             }
         }
     }
-    MaterialTheme(
-        colorScheme = scheme,
-        typography = HermesTypography,
-        content = content,
-    )
+    // در Material3 مقدار پیش‌فرض LocalContentColor مشکی است و خودِ MaterialTheme
+    // آن را تنظیم نمی‌کند. چون Scaffoldها شفاف هستند، رنگ محتوا مشکی می‌ماند و
+    // متن‌هایی که رنگ صریح ندارند (مثل متن پیام‌ها در چت و عنوان کارت‌ها)
+    // روی پس‌زمینهٔ تیره ناپدید می‌شوند. اینجا رنگ محتوای پیش‌فرض را
+    // روی onBackground تنظیم می‌کنیم تا همه‌چیز خوانا باشد.
+    CompositionLocalProvider(LocalContentColor provides scheme.onBackground) {
+        MaterialTheme(
+            colorScheme = scheme,
+            typography = HermesTypography,
+            content = content,
+        )
+    }
 }

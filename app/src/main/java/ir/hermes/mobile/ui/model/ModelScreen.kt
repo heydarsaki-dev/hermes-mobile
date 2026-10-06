@@ -4,7 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -80,7 +80,12 @@ fun ModelScreen(onBack: () -> Unit) {
             SectionTitle("پرووایدرها")
             if (providers.isEmpty()) EmptyState("پرووایدری یافت نشد", Icons.Default.CloudOff) else
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(providers) { p -> ProviderCard(p, onSelect = { name ->
+                // کلید یکتا؛ برخی پاسخ‌ها شناسه/نام تکراری برمی‌گردانند و
+                // LazyColumn با کلید تکراری کرش می‌کند.
+                itemsIndexed(
+                    providers,
+                    key = { i, p -> "$i:${J.str(p, "id", J.str(p, "name"))}" },
+                ) { _, p -> ProviderCard(p, onSelect = { name ->
                     scope.launch { HermesRepo.configSet("model", kotlinx.serialization.json.JsonPrimitive(name)) ; load() }
                 }, onKey = { keyProvider = J.str(p, "id", J.str(p, "name")) },
                     onDisconnect = { name ->

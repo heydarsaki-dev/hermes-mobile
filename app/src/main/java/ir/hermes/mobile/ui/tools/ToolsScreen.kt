@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -33,10 +34,11 @@ fun ToolsScreen(onBack: () -> Unit) {
     suspend fun load() {
         loading = true; error = null
         HermesRepo.toolsList()
-            .onSuccess { tools = J.listOf(J.obj(it), "tools", "items").map { o -> J.obj(it) } }
+            .onSuccess { r -> tools = J.listOf(J.obj(r), "tools", "items").map { J.obj(it) } }
             .onFailure { error = it.message }
         HermesRepo.toolSets()
-            .onSuccess { sets = J.listOf(J.obj(it), "toolsets", "items").map { o -> J.obj(it) } }
+            .onSuccess { r -> sets = J.listOf(J.obj(r), "toolsets", "items").map { J.obj(it) } }
+            .onFailure { error = it.message }
         loading = false
     }
     LaunchedEffect(Unit) { load() }
@@ -74,7 +76,12 @@ fun ToolsScreen(onBack: () -> Unit) {
                 EmptyState("ابزاری برگردانده نشد", Icons.Default.Build)
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(tools, key = { J.str(it, "name", J.str(it, "id")) }) { t ->
+                    itemsIndexed(
+                        tools,
+                        // کلید باید یکتا باشد؛ اگر نام/شناسه ابزار خالی یا تکراری بود،
+                        // LazyColumn با خطای «Key was already used» کرش می‌کرد.
+                        key = { i, t -> "$i:${J.str(t, "name", J.str(t, "id"))}" },
+                    ) { _, t ->
                         ToolRow(t) { enabled ->
                             scope.launch {
                                 HermesRepo.toolsConfigure(

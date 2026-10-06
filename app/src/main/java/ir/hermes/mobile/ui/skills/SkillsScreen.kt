@@ -32,9 +32,9 @@ fun SkillsScreen(onBack: () -> Unit) {
 
     suspend fun load() {
         loading = true; error = null
-        HermesRepo.skills().onSuccess { skills = J.listOf(J.obj(it), "skills", "items").map { o -> J.obj(it) } }
+        HermesRepo.skills().onSuccess { r -> skills = J.listOf(J.obj(r), "skills", "items").map { J.obj(it) } }
             .onFailure { error = it.message }
-        HermesRepo.plugins().onSuccess { plugins = J.listOf(J.obj(it), "plugins", "items").map { o -> J.obj(it) } }
+        HermesRepo.plugins().onSuccess { r -> plugins = J.listOf(J.obj(r), "plugins", "items").map { J.obj(it) } }
         loading = false
     }
     LaunchedEffect(Unit) { load() }

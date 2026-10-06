@@ -17,4 +17,6 @@ val Lime = Color(0xFF7BD88F)
 val Amber = Color(0xFFFFB454)
 val TextHi = Color(0xFFF2F4F8)
 val TextMid = Color(0xFFA8B0C0)
-val TextLow = Color(0xFF6B7484)
+// متن کم‌اهمیت/راهنما: کمی روشن‌تر شد تا روی پس‌زمینه‌های تیره
+// (و کارت‌های نیمه‌شفاف) واضح دیده شود. قبلاً 0xFF6B7484 بود.
+val TextLow = Color(0xFF808A9D)
