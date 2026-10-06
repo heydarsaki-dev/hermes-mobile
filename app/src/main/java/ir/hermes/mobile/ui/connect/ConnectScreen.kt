@@ -35,6 +35,8 @@ fun ConnectScreen(onConnected: () -> Unit) {
     var testing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var info by remember { mutableStateOf<String?>(null) }
+    // وقتی سرور تعبیهشدهٔ هرمس آماده شد، اتصال خودکار انجام میشود
+    var autoConnect by remember { mutableStateOf(false) }
 
     // به‌جای تابع محلی که state را از بیرون ترکیب‌بندی تغییر می‌داد،
     // از یک LaunchedEffect با کلید url/token استفاده می‌کنیم تا
@@ -57,6 +59,14 @@ fun ConnectScreen(onConnected: () -> Unit) {
             }
         }
         action
+    }
+
+    // اجرای اتصال پس از آمادهشدن سرور تعبیهشده (url/token تازه شدهاند)
+    LaunchedEffect(autoConnect, url, token) {
+        if (autoConnect && url.startsWith("http://127.0.0.1") && token.isNotEmpty()) {
+            autoConnect = false
+            doConnect()
+        }
     }
 
     Box(
@@ -86,7 +96,18 @@ fun ConnectScreen(onConnected: () -> Unit) {
                 "برای شروع، آدرس داشبورد و توکن نشست را وارد کنید",
                 color = TextMid, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center
             )
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(24.dp))
+
+            // اجرای هرمس داخل خودِ اپ — بدون ترموکس؛ پس از آمادهشدن،
+            // آدرس و توکن خودکار در فیلدهای زیر پر میشوند.
+            RuntimeCard { readyUrl, readyToken ->
+                if (url != readyUrl || token != readyToken) {
+                    url = readyUrl
+                    token = readyToken
+                    autoConnect = true
+                }
+            }
+            Spacer(Modifier.height(20.dp))
 
             GlassCard(Modifier.fillMaxWidth()) {
                 LabeledField(

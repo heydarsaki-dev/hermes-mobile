@@ -10,9 +10,13 @@ android {
     defaultConfig {
         applicationId = "ir.hermes.mobile"
         minSdk = 26
-        targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        // targetSdk پایین نگه داشته میشود (مثل ترموکس): از Android 10 به بعد،
+        // اپهایی که targetSdk ≥ 29 داشته باشند اجازه exec کردن باینری از پوشه
+        // داده خودشان را ندارند (محدودیت SELinux). runtime تعبیهشدهٔ هرمس
+        // (proot + rootfs) برای اجرا به این مجوز نیاز دارد.
+        targetSdk = 28
+        versionCode = 2
+        versionName = "1.1.0"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -34,7 +38,12 @@ android {
 
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.10" }
-    packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
+    packaging {
+        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+        // کتابخانههای bionic (proot و loader) باید به صورت فایل واقعی روی حافظه
+        // استخراج شوند تا قابل اجرا باشند.
+        jniLibs { useLegacyPackaging = true }
+    }
 }
 
 dependencies {
