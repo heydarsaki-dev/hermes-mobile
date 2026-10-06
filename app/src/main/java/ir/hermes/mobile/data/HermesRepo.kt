@@ -8,6 +8,8 @@ import ir.hermes.mobile.core.net.HermesSocket
 import ir.hermes.mobile.core.net.RpcEvent
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
 /**
  * مخزن مرکزی: تنظیمات، اتصال WebSocket و درخواست‌های REST.
@@ -76,18 +78,94 @@ object HermesRepo {
     suspend fun usage(): Result<JsonElement> = rpc("session.usage")
 
     // ---------- مدل و پرووایدر ----------
-    suspend fun modelOptions(): Result<JsonElement> = rpc("model.options")
+    /** فهرست پرووایدرها/مدل‌ها؛ با refresh=true کاتالوگ پرووایدرهای سفارشی هم دوباره خوانده می‌شود. */
+    suspend fun modelOptions(refresh: Boolean = false): Result<JsonElement> =
+        rpc("model.options", buildJsonObject { if (refresh) put("refresh", true) })
 
     suspend fun configGet(): Result<JsonElement> = rpc("config.get")
 
-    suspend fun configSet(path: String, value: JsonElement): Result<JsonElement> =
-        rpc("config.set", buildJsonObject { put("path", path); put("value", value) })
+    suspend fun configSet(key: String, value: JsonElement): Result<JsonElement> =
+        rpc("config.set", buildJsonObject { put("key", key); put("value", value) })
 
-    suspend fun saveKey(provider: String, key: String): Result<JsonElement> =
-        rpc("model.save_key", buildJsonObject { put("provider", provider); put("key", key) })
+    /**
+     * ذخیرهٔ کلید API یک پرووایدر شناخته‌شدهٔ هرمس.
+     * قرارداد JSON-RPC هرمس: {slug, api_key} — نه {provider, key}.
+     */
+    suspend fun saveKey(slug: String, key: String): Result<JsonElement> =
+        rpc("model.save_key", buildJsonObject { put("slug", slug); put("api_key", key) })
 
-    suspend fun disconnectProvider(provider: String): Result<JsonElement> =
-        rpc("model.disconnect", str("provider", provider))
+    suspend fun disconnectProvider(slug: String): Result<JsonElement> =
+        rpc("model.disconnect", str("slug", slug))
+
+    // ---------- پرووایدرهای سفارشی (REST داشبورد هرمس) ----------
+    // افزودن «پرووایدر سفارشی» از طریق همان RESTی انجام می‌شود که صفحهٔ Providers
+    // داشبورد استفاده می‌کند؛ config.set فقط کلیدهای ثابت را می‌پذیرد و پرووایدر
+    // جدید نمی‌سازد. روت‌های داشبورد روی همان سرور /api/ws سوار شده‌اند.
+
+    private fun enc(s: String): String = URLEncoder.encode(s, StandardCharsets.UTF_8)
+
+    suspend fun customEndpoints(): Result<JsonElement> =
+        api.call("/api/providers/custom-endpoints")
+
+    /**
+     * ساخت یا ویرایش یک پرووایدر سفارشی سازگار با OpenAI.
+     * [apiMode] یکی از "" (تشخیص خودکار)، "chat_completions"، "anthropic_messages"،
+     * "codex_responses". [apiKey] خالی یعنی دست‌نزدن/کلید لازم نیست.
+     */
+    suspend fun addCustomEndpoint(
+        name: String,
+        baseUrl: String,
+        model: String,
+        apiKey: String = "",
+        apiMode: String = "",
+        models: List<String> = emptyList(),
+        makeDefault: Boolean = false,
+        discoverModels: Boolean = true,
+        id: String = "",
+    ): Result<JsonElement> = api.call("/api/providers/custom-endpoints", "POST", buildJsonObject {
+        if (id.isNotBlank()) put("id", id)
+        put("name", name)
+        put("base_url", baseUrl)
+        put("model", model)
+        if (apiKey.isNotBlank()) put("api_key", apiKey)
+        put("api_mode", apiMode)
+        put("discover_models", discoverModels)
+        put("make_default", makeDefault)
+        put("models", buildJsonArray { models.forEach { add(it) } })
+    })
+
+    /** بررسی دسترسی endpoint و کشف فهرست مدل‌های آن. */
+    suspend fun validateCustomEndpoint(
+        name: String,
+        baseUrl: String,
+        model: String,
+        apiKey: String = "",
+        apiMode: String = "",
+    ): Result<JsonElement> = api.call("/api/providers/custom-endpoints/validate", "POST", buildJsonObject {
+        put("name", name); put("base_url", baseUrl); put("model", model)
+        if (apiKey.isNotBlank()) put("api_key", apiKey)
+        put("api_mode", apiMode)
+    })
+
+    /** فعال‌کردن یک پرووایدر سفارشی به‌عنوان مدل اصلی هرمس. */
+    suspend fun activateCustomEndpoint(id: String): Result<JsonElement> =
+        api.call("/api/providers/custom-endpoints/${enc(id)}/activate", "POST", JsonObject(emptyMap()))
+
+    suspend fun deleteCustomEndpoint(id: String): Result<JsonElement> =
+        api.call("/api/providers/custom-endpoints/${enc(id)}", "DELETE")
+
+    /**
+     * انتخاب مدل برای اسلات اصلی (REST داشبورد). برای پرووایدرهای سفارشی
+     * base_url هم فرستاده می‌شود تا مسیر درست حل شود.
+     */
+    suspend fun setMainModel(
+        provider: String,
+        model: String,
+        baseUrl: String = "",
+    ): Result<JsonElement> = api.call("/api/model/set", "POST", buildJsonObject {
+        put("scope", "main"); put("provider", provider); put("model", model)
+        if (baseUrl.isNotBlank()) put("base_url", baseUrl)
+    })
 
     // ---------- ابزارها ----------
     suspend fun toolsList(): Result<JsonElement> = rpc("tools.list")
