@@ -3,6 +3,13 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// کلید امضای ثابت (از سکرت‌های CI یا متغیر محیطی).
+// بدون آن، بیلد محلی با کلید دیباگ پیش‌فرض امضا می‌شود.
+val keystoreFile = System.getenv("HERMES_KEYSTORE_FILE")?.let { File(it) }?.takeIf { it.exists() }
+val keystorePassword = System.getenv("HERMES_KEYSTORE_PASSWORD") ?: ""
+val keystoreAlias = System.getenv("HERMES_KEY_ALIAS") ?: "hermes"
+val keystoreKeyPassword = System.getenv("HERMES_KEY_PASSWORD") ?: keystorePassword
+
 android {
     namespace = "ir.hermes.mobile"
     compileSdk = 36
@@ -10,23 +17,37 @@ android {
     defaultConfig {
         applicationId = "ir.hermes.mobile"
         minSdk = 26
-        // targetSdk پایین نگه داشته میشود (مثل ترموکس): از Android 10 به بعد،
-        // اپهایی که targetSdk ≥ 29 داشته باشند اجازه exec کردن باینری از پوشه
-        // داده خودشان را ندارند (محدودیت SELinux). runtime تعبیهشدهٔ هرمس
+        // targetSdk پایین نگه داشته می‌شود (مثل ترموکس): از Android 10 به بعد،
+        // اپ‌هایی که targetSdk ≥ 29 داشته باشند اجازه exec کردن باینری از پوشه
+        // داده خودشان را ندارند (محدودیت SELinux). runtime تعبیه‌شدهٔ هرمس
         // (proot + rootfs) برای اجرا به این مجوز نیاز دارد.
         targetSdk = 28
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "2.1.0"
         vectorDrawables { useSupportLibrary = true }
     }
 
+    signingConfigs {
+        if (keystoreFile != null) {
+            create("hermes") {
+                storeFile = keystoreFile
+                storePassword = keystorePassword
+                keyAlias = keystoreAlias
+                keyPassword = keystoreKeyPassword
+            }
+        }
+    }
+
     buildTypes {
+        // همین کلید برای هر دو نوع بیلد استفاده می‌شود تا نسخهٔ جدید بدون
+        // حذف اپ قبلی روی آن نصب شود (امضای یکسان + همان applicationId).
+        val signing = if (keystoreFile != null) signingConfigs.getByName("hermes") else signingConfigs.getByName("debug")
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signing
         }
         debug {
-            applicationIdSuffix = ".debug"
+            signingConfig = signing
         }
     }
 
@@ -40,9 +61,6 @@ android {
     composeOptions { kotlinCompilerExtensionVersion = "1.5.10" }
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
-        // کتابخانههای bionic (proot و loader) باید به صورت فایل واقعی روی حافظه
-        // استخراج شوند تا قابل اجرا باشند.
-        jniLibs { useLegacyPackaging = true }
     }
 
     lint {

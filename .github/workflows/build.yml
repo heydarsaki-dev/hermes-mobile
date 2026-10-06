@@ -36,10 +36,30 @@ jobs:
           key: gradle-${{ hashFiles('**/*.gradle.kts') }}
           restore-keys: gradle-
 
+      - name: آماده‌سازی کلید امضای ثابت
+        env:
+          HERMES_KEYSTORE_B64: ${{ secrets.HERMES_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$HERMES_KEYSTORE_B64" ]; then
+            echo "$HERMES_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/hermes.p12"
+            echo "HERMES_KEYSTORE_FILE=$RUNNER_TEMP/hermes.p12" >> "$GITHUB_ENV"
+            echo "کلید امضای ثابت آماده شد"
+          else
+            echo "سکرت کلید امضا تنظیم نشده؛ بیلد با کلید دیباگ پیش‌فرض امضا می‌شود"
+          fi
+
       - name: ساخت APK دیباگ
+        env:
+          HERMES_KEYSTORE_PASSWORD: ${{ secrets.HERMES_KEYSTORE_PASSWORD }}
+          HERMES_KEY_ALIAS: ${{ secrets.HERMES_KEY_ALIAS }}
+          HERMES_KEY_PASSWORD: ${{ secrets.HERMES_KEY_PASSWORD }}
         run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: ساخت APK ریلیز
+        env:
+          HERMES_KEYSTORE_PASSWORD: ${{ secrets.HERMES_KEYSTORE_PASSWORD }}
+          HERMES_KEY_ALIAS: ${{ secrets.HERMES_KEY_ALIAS }}
+          HERMES_KEY_PASSWORD: ${{ secrets.HERMES_KEY_PASSWORD }}
         run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: بارگذاری APK

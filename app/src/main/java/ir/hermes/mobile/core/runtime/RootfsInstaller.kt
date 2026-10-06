@@ -3,30 +3,66 @@ package ir.hermes.mobile.core.runtime
 import android.content.Context
 import android.os.Environment
 import android.os.StatFs
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 
 /**
- * نصب runtime هرمس داخل حافظهٔ برنامه:
- *  ۱. باینریهای proot + loader و کتابخانههایشان از assets به files/runtime/{bin,lib}
- *  ۲. استخراج rootfs اوبونتو (شامل پایتون۳.۱۲ و هرمس۰.۱۹.۰) از دو پارت gzip
- *  ۳. نوشتن نشانگر نصب تا دوباره استخراج نشود
+ * نصب runtime هرمس داخل حافظهٔ برنامه.
  *
- * حجم: ~۷۶ مگابایت فشرده → ~۲۵۳ مگابایت روی حافظه.
+ * برای کوچک ماندن حجم APK، دیگر هیچ باینری‌ای داخل assets بسته‌بندی نمی‌شود؛
+ * همه‌چیز یک‌بار از ریلیز گیت‌هاب دانلود می‌شود:
+ *  ۱. دانلود proot + loader + libtalloc + libandroid-shmem به files/runtime/{bin,lib}
+ *  ۲. دانلود rootfs.tar.gz (~۷۶ مگابایت) و استخراج آن در files/runtime/rootfs
+ *  ۳. نوشتن نشانگر نصب تا دوباره دانلود/استخراج نشود
+ *
+ * حجم: ~۷۶ مگابایت دانلود → ~۲۵۳ مگابایت روی حافظه.
+ * هر فایل با طول دقیق و SHA-256 بازبینی می‌شود.
  */
 object RootfsInstaller {
 
-    /** نسخهٔ ساختار runtime؛ با تغییر، نصب دوباره انجام میشود */
+    /** نسخهٔ ساختار runtime؛ با تغییر، نصب دوباره انجام می‌شود */
     const val VERSION = 3
 
-    const val PART1_BYTES = 41943040L
-    const val PART2_BYTES = 37336855L
-    const val TOTAL_COMPRESSED = PART1_BYTES + PART2_BYTES
+    const val PREFERRED_PORT = 9119
 
-    /** فضای موردنیاز: ۲۵۳MB ریشه + ۷۶MB پارت هنگام استخراج + حاشیه */
+    /** محل payload در ریلیز گیت‌هاب */
+    private const val BASE_URL =
+        "https://github.com/heydarsaki-dev/hermes-mobile/releases/download/runtime-v1"
+
+    /** فضای موردنیاز: ۲۵۳MB ریشه + ۷۶MB فایل فشرده هنگام استخراج + حاشیه */
     const val REQUIRED_FREE = 380L * 1024 * 1024
 
-    const val PREFERRED_PORT = 9119
+    // اندازه و SHA-256 دقیق فایل‌های ریلیز
+    private const val PROOT_NAME = "proot"
+    private const val PROOT_BYTES = 247_488L
+    private const val PROOT_SHA = "1545b85b312505db6eb6908ff8b2ded0a77a3bd689c50ae85aa7c1d8445dd717"
+
+    private const val LOADER_NAME = "loader"
+    private const val LOADER_BYTES = 18_136L
+    private const val LOADER_SHA = "cbdef0e652c2b78af25d867e1719fdebbb0915e25aae2dd35b3b5c1835f6b551"
+
+    private const val TALLOC_NAME = "libtalloc.so.2"
+    private const val TALLOC_BYTES = 33_592L
+    private const val TALLOC_SHA = "742b438c4d09e276985a61d44164c9de207b6d8cc268f3018cb3001961bcb309"
+
+    private const val SHMEM_NAME = "libandroid-shmem.so"
+    private const val SHMEM_BYTES = 14_432L
+    private const val SHMEM_SHA = "84475798e07c8174dbbfaec70a827fdb02f19ffa69a589380c13e7507fd0e731"
+
+    private const val ROOTFS_NAME = "rootfs.tar.gz"
+    private const val ROOTFS_BYTES = 79_279_895L
+    private const val ROOTFS_SHA = "5ca65bcbf95dac07abade6aaf54a8affc6f9da3d42978123be146a4a66f9723b"
+
+    private val client: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
+            .build()
+    }
 
     fun rootfsDir(ctx: Context): File = File(ctx.filesDir, "runtime/rootfs")
     fun binDir(ctx: Context): File = File(ctx.filesDir, "runtime/bin")
@@ -49,8 +85,8 @@ object RootfsInstaller {
     }
 
     /**
-     * نصب کامل. باید روی dispatcher پسزمینه فراخوانی شود.
-     * @param onProgress (نقطهای ۰..۱، شرح فارسی) — از هر رشته صدا زده میشود
+     * نصب کامل. باید روی dispatcher پس‌زمینه فراخوانی شود.
+     * @param onProgress (نقطه‌ای ۰..۱، شرح فارسی) — از هر رشته صدا زده می‌شود
      */
     @JvmStatic
     fun install(ctx: Context, onProgress: (Double, String) -> Unit = { _, _ -> }) {
@@ -64,45 +100,44 @@ object RootfsInstaller {
             )
         }
 
-        val runtimeRoot = File(ctx.filesDir, "runtime")
         val rootfs = rootfsDir(ctx)
         val bin = binDir(ctx)
         val lib = libDir(ctx)
 
-        // پاکسازی نصب ناقص قبلی (بدون نشانگر، هر چیزی ناقص است)
-        if (!isInstalled(ctx)) {
-            rootfs.deleteRecursively()
-        }
+        // پاک‌سازی نصب ناقص قبلی (بدون نشانگر، هر چیزی ناقص است)
+        rootfs.deleteRecursively()
         bin.mkdirs(); lib.mkdirs(); rootfs.mkdirs()
 
-        // ۱) باینریها و کتابخانهها
-        onProgress(0.01, "کپی باینریهای proot...")
-        copyAssetExec(ctx, "runtime/proot", File(bin, "proot"))
-        copyAssetExec(ctx, "runtime/loader", File(bin, "loader"))
-        copyAsset(ctx, "runtime/lib/libtalloc.so.2", File(lib, "libtalloc.so.2"))
-        copyAsset(ctx, "runtime/lib/libandroid-shmem.so", File(lib, "libandroid-shmem.so"))
+        // ۱) باینری‌ها و کتابخانه‌ها (کوچک)
+        onProgress(0.005, "دانلود proot...")
+        download(PROOT_NAME, File(bin, "proot"), PROOT_BYTES, PROOT_SHA)
+        File(bin, "proot").setExecutable(true, false)
 
-        // ۲) استخراج rootfs (بخش اصلی)
-        val part1 = File(bin, "rootfs.tar.gz.00")
-        val part2 = File(bin, "rootfs.tar.gz.01")
-        copyAsset(ctx, "runtime/rootfs.tar.gz.00", part1) { p ->
-            onProgress(0.02 + p * 0.03, "آمادهسازی دادههای سیستمی ${(p * 100).toInt()}٪")
-        }
-        copyAsset(ctx, "runtime/rootfs.tar.gz.01", part2) { p ->
-            onProgress(0.05 + p * 0.03, "آمادهسازی دادههای سیستمی ${(3 + p * 3).toInt()}٪")
+        onProgress(0.010, "دانلود loader...")
+        download(LOADER_NAME, File(bin, "loader"), LOADER_BYTES, LOADER_SHA)
+        File(bin, "loader").setExecutable(true, false)
+
+        onProgress(0.015, "دانلود کتابخانه‌های proot...")
+        download(TALLOC_NAME, File(lib, TALLOC_NAME), TALLOC_BYTES, TALLOC_SHA)
+        download(SHMEM_NAME, File(lib, SHMEM_NAME), SHMEM_BYTES, SHMEM_SHA)
+
+        // ۲) دانلود rootfs (بخش اصلی)
+        val tar = File(ctx.cacheDir, ROOTFS_NAME)
+        download(ROOTFS_NAME, tar, ROOTFS_BYTES, ROOTFS_SHA) { p ->
+            onProgress(0.02 + p * 0.28, "دانلود سیستم هرمس... ${(p * 100).toInt()}٪")
         }
 
         try {
-            TarExtractor.extract(listOf(part1.toPath(), part2.toPath()), rootfs.toPath(), stripComponents = 1) { read, total ->
+            TarExtractor.extract(listOf(tar.toPath()), rootfs.toPath(), stripComponents = 1) { read, total ->
                 val frac = if (total > 0) read.toDouble() / total else 0.0
                 onProgress(
-                    0.08 + frac * 0.86,
+                    0.30 + frac * 0.68,
                     "استخراج سیستم‌عامل هرمس... ${(frac * 100).toInt()}٪",
                 )
             }
         } finally {
-            // پارتها بعد از استخراج فایل اضافهاند؛ فضا را پس میدهیم
-            part1.delete(); part2.delete()
+            // فایل فشرده بعد از استخراج اضافه است؛ فضا را پس می‌دهیم
+            tar.delete()
         }
 
         // ۳) اعتبارسنجی و نشانگر
@@ -110,7 +145,7 @@ object RootfsInstaller {
         if (!hermesBin.exists()) {
             throw IllegalStateException("نصب ناقص ماند: نقطهٔ ورود هرمس پیدا نشد. دوباره تلاش کنید.")
         }
-        // DNS مهمان: اگر خالی/خراب بود، پیشفرض قابل اعتماد بنویس
+        // DNS مهمان: اگر خالی/خراب بود، پیش‌فرض قابل اعتماد بنویس
         val resolv = File(rootfs, "etc/resolv.conf")
         runCatching {
             val txt = if (resolv.exists()) resolv.readText() else ""
@@ -129,42 +164,75 @@ object RootfsInstaller {
     @JvmStatic
     fun uninstall(ctx: Context) {
         File(ctx.filesDir, "runtime").deleteRecursively()
+        runCatching { File(ctx.cacheDir, ROOTFS_NAME).delete() }
     }
 
-    // ---------- کمکیها ----------
+    // ---------- کمکی‌ها ----------
 
-    private fun copyAsset(ctx: Context, asset: String, dest: File, onProgress: (Double) -> Unit = {}) {
-        if (dest.exists() && dest.length() > 0 && dest.length() == assetSize(ctx, asset)) return
+    /**
+     * دانلود یک فایل از ریلیز. اگر فایل از قبل با همان اندازه و SHA-256 موجود
+     * باشد، دوباره دانلود نمی‌شود.
+     */
+    private fun download(
+        name: String,
+        dest: File,
+        expectBytes: Long,
+        expectSha: String,
+        onProgress: (Double) -> Unit = {},
+    ) {
+        if (dest.exists() && dest.length() == expectBytes && sha256Of(dest) == expectSha) return
+
         dest.parentFile?.mkdirs()
-        val total = assetSize(ctx, asset).coerceAtLeast(1L)
-        ctx.assets.open(asset).use { input ->
-            FileOutputStream(dest).use { out ->
-                val buf = ByteArray(256 * 1024)
-                var done = 0L
-                while (true) {
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    out.write(buf, 0, n)
-                    done += n
-                    onProgress(done.toDouble() / total)
+        val request = Request.Builder().url("$BASE_URL/$name").build()
+        val digest = MessageDigest.getInstance("SHA-256")
+
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) error("دانلود $name ناموفق بود (HTTP ${response.code})")
+            val body = response.body ?: error("پاسخ خالی برای $name")
+            val total = if (expectBytes > 0) expectBytes else body.contentLength()
+
+            body.byteStream().use { input ->
+                FileOutputStream(dest).use { out ->
+                    val buf = ByteArray(256 * 1024)
+                    var done = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        digest.update(buf, 0, n)
+                        done += n
+                        if (total > 0) onProgress(done.toDouble() / total)
+                    }
                 }
+            }
+        }
+
+        val gotBytes = dest.length()
+        if (expectBytes > 0 && gotBytes != expectBytes) {
+            dest.delete()
+            error("حجم $name ناهمخوان است ($gotBytes ≠ $expectBytes)")
+        }
+        if (expectSha.isNotEmpty()) {
+            val got = digest.digest().joinToString("") { "%02x".format(it) }
+            if (got != expectSha) {
+                dest.delete()
+                error("بازبینی SHA-256 برای $name ناموفق بود")
             }
         }
     }
 
-    private fun copyAssetExec(ctx: Context, asset: String, dest: File) {
-        copyAsset(ctx, asset, dest)
-        dest.setExecutable(true, false)
-    }
-
-    private fun assetSize(ctx: Context, asset: String): Long = try {
-        ctx.assets.openFd(asset).use { it.length }
-    } catch (t: Throwable) {
-        // assets پشت zipalign/packaging ممکن است fd ندهند؛ از پیش میدانیم
-        when (asset) {
-            "runtime/rootfs.tar.gz.00" -> PART1_BYTES
-            "runtime/rootfs.tar.gz.01" -> PART2_BYTES
-            else -> 0L
+    private fun sha256Of(file: File): String = try {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(256 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                digest.update(buf, 0, n)
+            }
         }
+        digest.digest().joinToString("") { "%02x".format(it) }
+    } catch (t: Throwable) {
+        ""
     }
 }
