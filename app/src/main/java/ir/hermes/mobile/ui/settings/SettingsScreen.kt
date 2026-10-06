@@ -1,16 +1,26 @@
 package ir.hermes.mobile.ui.settings
 
+import android.content.Context
+import android.content.Intent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import ir.hermes.mobile.core.util.CrashLogger
 import ir.hermes.mobile.core.util.Jalali
 import ir.hermes.mobile.data.HermesRepo
 import ir.hermes.mobile.data.J
@@ -19,15 +29,22 @@ import ir.hermes.mobile.ui.theme.*
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.jsonPrimitive
 
 @Composable
 fun SettingsScreen(onBack: () -> Unit, onLoggedOut: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var url by remember { mutableStateOf(HermesRepo.api.baseUrl) }
     var token by remember { mutableStateOf(HermesRepo.api.token) }
     var usage by remember { mutableStateOf<JsonObject?>(null) }
     var msg by remember { mutableStateOf<String?>(null) }
+
+    // گزارش‌های کرش از حافظهٔ اپ خوانده می‌شوند؛ با هر تغییر نسخهٔ آن دوباره
+    // خوانده می‌شوند تا بعد از «پاک کردن» فهرست به‌روز شود.
+    var crashRev by remember { mutableStateOf(0) }
+    val crashCount = remember(crashRev) { CrashLogger.count() }
+    val crashText = remember(crashRev) { if (crashCount > 0) CrashLogger.all() else "" }
 
     LaunchedEffect(Unit) { HermesRepo.usage().onSuccess { usage = J.obj(it) } }
 
@@ -66,11 +83,77 @@ fun SettingsScreen(onBack: () -> Unit, onLoggedOut: () -> Unit) {
                 }
             }
 
+            // ------------------------------------------------------------------
+            // گزارش خطا: اگر اپ کرش کرد، استک‌تریس همین‌جا ذخیره شده است.
+            // ------------------------------------------------------------------
+            Spacer(Modifier.height(18.dp))
+            SectionTitle("گزارش خطا")
+            GlassCard(Modifier.fillMaxWidth(), borderColor = Amber.copy(alpha = 0.3f)) {
+                if (crashCount == 0) {
+                    Text(
+                        "هیچ کرشی ثبت نشده است.",
+                        style = MaterialTheme.typography.bodySmall, color = Lime
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "اگر اپ بسته شد، دوباره بازش کنید و به همین بخش برگردید تا گزارش اینجا باشد.",
+                        style = MaterialTheme.typography.bodySmall, color = TextLow
+                    )
+                } else {
+                    Text(
+                        "${Jalali.fa(crashCount)} گزارش ثبت شده — برای ارسال به توسعه‌دهنده «کپی» یا «اشتراک‌گذاری» کنید.",
+                        style = MaterialTheme.typography.bodySmall, color = Amber
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Box(
+                        Modifier.fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Ink0)
+                            .padding(10.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            crashText,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = TextMid,
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PrimaryButton(
+                            "کپی گزارش",
+                            {
+                                clipboard.setText(AnnotatedString(crashText))
+                                msg = "گزارش کرش کپی شد"
+                            },
+                            Modifier.weight(1f),
+                            icon = Icons.Default.ContentCopy,
+                        )
+                        GhostButton(
+                            "اشتراک‌گذاری",
+                            { shareCrash(ctx, crashText) },
+                            Modifier.weight(1f),
+                            color = Cyan,
+                            icon = Icons.Default.Share,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    GhostButton(
+                        "پاک کردن گزارش‌ها",
+                        { CrashLogger.clear(); crashRev++ },
+                        Modifier.fillMaxWidth(),
+                        color = Rose,
+                        icon = Icons.Default.Delete,
+                    )
+                }
+            }
+
             Spacer(Modifier.height(18.dp))
             SectionTitle("درباره")
             GlassCard(Modifier.fillMaxWidth()) {
                 LabeledValue("نام", "هرمس — کلاینت اندروید")
-                LabeledValue("نسخه", "1.0.0")
+                LabeledValue("نسخه", CrashLogger.appVersion(ctx))
                 LabeledValue("پروتکل", "JSON-RPC 2.0 روی /api/ws")
                 LabeledValue("تاریخ", Jalali.format())
             }
@@ -85,7 +168,7 @@ fun SettingsScreen(onBack: () -> Unit, onLoggedOut: () -> Unit) {
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(48.dp),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Rose),
                 border = androidx.compose.foundation.BorderStroke(1.dp, Rose.copy(alpha = 0.5f)),
             ) { Text("خروج از حساب") }
@@ -94,4 +177,14 @@ fun SettingsScreen(onBack: () -> Unit, onLoggedOut: () -> Unit) {
             Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+/** اشتراک‌گذاری متن گزارش با هر اپی که کاربر انتخاب کند (تلگرام، ایمیل، …) */
+private fun shareCrash(ctx: Context, text: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, "Hermes Mobile — crash report")
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    runCatching { ctx.startActivity(Intent.createChooser(intent, "اشتراک‌گذاری گزارش")) }
 }

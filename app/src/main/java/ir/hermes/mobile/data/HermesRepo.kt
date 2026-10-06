@@ -33,6 +33,8 @@ object HermesRepo {
     fun addLog(line: String) {
         logLines.value = (logLines.value + "[${ir.hermes.mobile.core.util.Jalali.fa(System.currentTimeMillis())}] $line")
             .takeLast(400)
+        // همین خط‌ها در گزارش کرش هم می‌آیند تا وضعیت شبکه/سوکت معلوم باشد.
+        ir.hermes.mobile.core.util.CrashLogger.breadcrumb(line)
     }
 
     suspend fun applyConfig(cfg: ServerConfig) {

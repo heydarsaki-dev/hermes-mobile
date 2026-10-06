@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import ir.hermes.mobile.core.datastore.ServerConfig
 import ir.hermes.mobile.core.net.RpcEvent
+import ir.hermes.mobile.core.util.CrashLogger
 import ir.hermes.mobile.data.ChatEngine
 import ir.hermes.mobile.data.HermesRepo
 import ir.hermes.mobile.ui.chat.ChatScreen
@@ -50,6 +51,8 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // باید قبل از هر چیز نصب شود تا هر کرشی ثبت و بعداً قابل استخراج باشد.
+        CrashLogger.install(applicationContext)
         HermesRepo.init(applicationContext)
         setContent {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
@@ -91,6 +94,9 @@ private fun Root() {
         }
         loading = false
     }
+
+    // نشانهٔ آخرین صفحه‌ها، تا در گزارش کرش معلوم باشد کدام صفحه اپ را بسته است.
+    LaunchedEffect(route) { if (route.isNotBlank()) CrashLogger.breadcrumb("صفحه=$route") }
 
     BackHandler(enabled = route.isNotBlank() && route != "hub") { route = "hub" }
 
