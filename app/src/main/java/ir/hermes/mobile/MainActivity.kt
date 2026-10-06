@@ -4,8 +4,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -23,7 +21,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -106,16 +103,11 @@ private fun Root() {
                 // Scaffold/LazyColumn دارد) داخل آن‌ها ترکیب شود، Composer خراب
                 // می‌شود و اپ با ArrayIndexOutOfBoundsException در IntStack.peek2
                 // کرش می‌کند (کلیک روی «مدل و پرووایدر»/«ابزارها» از خانه).
-                val fade = remember { Animatable(1f) }
-                LaunchedEffect(route) {
-                    fade.snapTo(0f)
-                    fade.animateTo(1f, animationSpec = tween(durationMillis = 180))
-                }
+                // بدون هیچ انیمیشنی هنگام تغییر مسیر: هر Invalidat‌شن آنیمیشن هم‌زمان
+                // با تغییر محتوا باعث می‌شد اسلات SubcomposeLayout (Scaffold/Lazy) در
+                // فاز draw ساخته شود و Composer خراب شود.
                 Column(Modifier.fillMaxSize()) {
-                    Box(
-                        Modifier.weight(1f).fillMaxWidth()
-                            .graphicsLayer { alpha = fade.value },
-                    ) {
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
                         when (route) {
                             "hub" -> HubScreen(status, sid, "", onGo = { route = it })
                             "chat" -> ChatScreen(
