@@ -17,7 +17,6 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,6 +28,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import ir.hermes.mobile.core.datastore.ServerConfig
 import ir.hermes.mobile.core.net.RpcEvent
+import ir.hermes.mobile.core.runtime.HermesRuntime
 import ir.hermes.mobile.core.util.CrashLogger
 import ir.hermes.mobile.data.ChatEngine
 import ir.hermes.mobile.data.HermesRepo
@@ -65,11 +65,19 @@ private fun Root() {
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     val engine = remember { ChatEngine() }
-    var route by rememberSaveable { mutableStateOf("") }
-    var ready by rememberSaveable { mutableStateOf(false) }
+    // توجه: ready/route عمداً دیگر rememberSaveable نیستند.
+    //
+    // سرور تعبیه‌شده فرآیند فرزند همین اپ است؛ با بسته‌شدن کامل اپ (یا kill شدن
+    // توسط سیستم) خاموش می‌شود. اگر وضعیت «وصل» را از حافظهٔ قبلی بازیابی کنیم،
+    // بعد از باز شدن دوباره اپ خود را وصل فرض می‌کند ولی سرور خاموش است و
+    // اولین تعامل خطا می‌دهد. پس با هر باز شدن، وضعیت از نو از روی اتصال واقعی
+    // سوکت تعیین می‌شود.
+    var route by remember { mutableStateOf("") }
+    var ready by remember { mutableStateOf(false) }
+    // اگر کاربر «خروج از حساب» بزند، نباید اتصال خودکار دوباره برقرار شود.
+    var autoReconnect by remember { mutableStateOf(true) }
     var loading by remember { mutableStateOf(true) }
     val status by HermesRepo.socket.status.collectAsState()
-    val sessionId by remember { mutableStateOf("") }
     var sid by remember { mutableStateOf("") }
 
     // اتصال رویدادهای سوکت به موتور چت
@@ -82,15 +90,55 @@ private fun Root() {
         }
     }
 
-    // بازیابی تنظیمات
+    // بازیابی تنظیمات + بالا آوردن خودکار سرور درون‌اپی
     LaunchedEffect(Unit) {
         val cfg = HermesRepo.settings.config.first()
         if (cfg.connected && cfg.url.isNotBlank()) {
             HermesRepo.applyConfig(cfg)
-            HermesRepo.socket.connect()
-            route = "hub"
+            // سرور درون‌اپی بعد از بسته‌شدن اپ خاموش شده است؛ اگر آدرس لوکال است
+            // و نصب وجود دارد، خودکار دوباره بالا می‌آید و [RuntimeCard] پس از
+            // آماده‌شدن، اتصال را با توکن تازه برقرار می‌کند.
+            val embedded = cfg.url.contains("127.0.0.1") || cfg.url.contains("localhost")
+            if (embedded) {
+                // توکنِ ذخیره‌شده مال سرور قبلی است و حالا بی‌اعتبار است؛ پس
+                // عجله‌ای برای وصل‌شدن با آن نیست — منتظر READY می‌مانیم.
+                runCatching { HermesRuntime.start(ctx) }
+            } else {
+                HermesRepo.socket.connect()
+            }
         }
         loading = false
+    }
+
+    // «آماده» بودن از وضعیت واقعی سوکت می‌آید، نه از حافظه.
+    // با قطع/خطای اتصال، کاربر به صفحهٔ اتصال برمی‌گردد تا دوباره وصل کند.
+    LaunchedEffect(status) {
+        when (status) {
+            RpcEvent.State.CONNECTED -> {
+                ready = true
+                autoReconnect = true
+                if (route.isBlank()) route = "hub"
+            }
+            // قطع سوکت (چه خطا چه بستن تمیز، مثل خاموش‌شدن یا kill‌شدن سرور)
+            // یعنی «وصل نیستیم». چند تلاش کوتاه می‌کنیم چون ممکن است قطع گذرا
+            // باشد (برگشت اپ از پس‌زمینه)؛ اگر سرور واقعاً خاموش باشد به صفحهٔ
+            // اتصال برمی‌گردیم — نه اینکه خود را وصل فرض کنیم.
+            RpcEvent.State.FAILED, RpcEvent.State.CLOSED -> {
+                if (ready && autoReconnect) {
+                    var alive = false
+                    for (i in 1..3) {
+                        kotlinx.coroutines.delay(1200L * i)
+                        // خروج از حساب یا قطع شدن دستی: دست نگه دار
+                        if (!autoReconnect || !ready) return@LaunchedEffect
+                        alive = runCatching { HermesRepo.api.ping() }
+                            .getOrNull()?.isSuccess == true
+                        if (alive) break
+                    }
+                    if (alive) HermesRepo.socket.connect() else ready = false
+                }
+            }
+            else -> Unit
+        }
     }
 
     // نشانهٔ آخرین صفحه‌ها، تا در گزارش کرش معلوم باشد کدام صفحه اپ را بسته است.
@@ -107,7 +155,15 @@ private fun Root() {
             loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = ir.hermes.mobile.ui.theme.Gold)
             }
-            !ready && route == "" -> ConnectScreen { ready = true; route = "hub" }
+            // هرگاه واقعاً وصل نباشیم صفحهٔ اتصال نمایش داده می‌شود (نه فقط در
+            // شروع). قبلاً شرط «route == ""» هم لازم بود و نتیجه‌اش این بود که
+            // بعد از قطع‌شدن سرور، اپ روی همان صفحهٔ قبلی می‌ماند و خود را وصل
+            // فرض می‌کرد و اولین درخواست خطا می‌داد.
+            !ready -> ConnectScreen {
+                autoReconnect = true
+                if (route.isBlank()) route = "hub"
+                ready = true
+            }
             // نکتهٔ مهم: اینجا عمداً از Scaffold/AnimatedContent استفاده نمی‌کنیم.
             //
             // ترکیب قبلی «Scaffold ریشه → AnimatedContent → Scaffold صفحهٔ مقصد»
@@ -161,7 +217,12 @@ private fun Root() {
                         "skills" -> SkillsScreen { route = "hub" }
                         "cron" -> CronScreen { route = "hub" }
                         "terminal" -> TerminalScreen { route = "hub" }
-                        "settings" -> SettingsScreen({ route = "hub" }) { route = ""; ready = false }
+                        "settings" -> SettingsScreen({ route = "hub" }) {
+                            // خروج از حساب: اول اجازهٔ اتصال خودکار را بگیر، بعد وضعیت را پاک کن
+                            autoReconnect = false
+                            route = ""
+                            ready = false
+                        }
                         else -> HubScreen(status, sid, "", onGo = { route = it })
                     }
                 }

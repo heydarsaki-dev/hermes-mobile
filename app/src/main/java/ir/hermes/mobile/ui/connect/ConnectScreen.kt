@@ -29,8 +29,10 @@ import kotlinx.coroutines.launch
 @Composable
 fun ConnectScreen(onConnected: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var url by remember { mutableStateOf("http://127.0.0.1:8080") }
-    var token by remember { mutableStateOf("") }
+    // مقادیر ذخیره‌شده را از مخزن بخوان تا بعد از باز شدن دوبارهٔ اپ، آدرس/توکن
+    // قبلی در فیلدها بماند (Root پیش از این applyConfig را صدا زده است).
+    var url by remember { mutableStateOf(HermesRepo.api.baseUrl.ifBlank { "http://127.0.0.1:8080" }) }
+    var token by remember { mutableStateOf(HermesRepo.api.token) }
     var showToken by remember { mutableStateOf(false) }
     var testing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -101,9 +103,15 @@ fun ConnectScreen(onConnected: () -> Unit) {
             // اجرای هرمس داخل خودِ اپ — بدون ترموکس؛ پس از آمادهشدن،
             // آدرس و توکن خودکار در فیلدهای زیر پر میشوند.
             RuntimeCard { readyUrl, readyToken ->
-                if (url != readyUrl || token != readyToken) {
-                    url = readyUrl
-                    token = readyToken
+                // اگر فیلد آدرس در اختیار کاربر نباشد (خالی، لوکال، یا همان سرور
+                // درون‌اپی)، با آماده‌شدن سرور، آدرس/توکن تازه پر و اتصال خودکار
+                // برقرار می‌شود — هم در اولین اجرا و هم بعد از خاموش‌شدن سرور و
+                // باز شدن دوبارهٔ اپ (توکن قبلی بی‌اعتبار است).
+                val ours = url.isBlank() || url == readyUrl ||
+                    url.contains("127.0.0.1") || url.contains("localhost")
+                if (ours) {
+                    if (url != readyUrl) url = readyUrl
+                    if (token != readyToken) token = readyToken
                     autoConnect = true
                 }
             }
