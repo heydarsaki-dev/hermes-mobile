@@ -1,6 +1,9 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    // با Kotlin 2.x پلاگین کامپایلر Compose جداگانه اعمال می‌شود و
+    // kotlinCompilerExtensionVersion دیگر لازم نیست.
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 // کلید امضای ثابت (از سکرت‌های CI یا متغیر محیطی).
@@ -58,7 +61,9 @@ android {
     kotlinOptions { jvmTarget = "17" }
 
     buildFeatures { compose = true }
-    composeOptions { kotlinCompilerExtensionVersion = "1.5.10" }
+    // نسخهٔ کامپایلر از خودِ پلاگین Compose می‌آید و با runtime (BOM) هم‌خوان است.
+    composeCompiler {}
+
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
