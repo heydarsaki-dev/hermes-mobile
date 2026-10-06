@@ -24,7 +24,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -61,13 +60,11 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun Root() {
     val scope = rememberCoroutineScope()
-    val ctx = LocalContext.current
     val engine = remember { ChatEngine() }
     var route by rememberSaveable { mutableStateOf("") }
     var ready by rememberSaveable { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     val status by HermesRepo.socket.status.collectAsState()
-    val sessionId by remember { mutableStateOf("") }
     var sid by remember { mutableStateOf("") }
 
     // اتصال رویدادهای سوکت به موتور چت
@@ -103,51 +100,43 @@ private fun Root() {
                 CircularProgressIndicator(color = ir.hermes.mobile.ui.theme.Gold)
             }
             !ready && route == "" -> ConnectScreen { ready = true; route = "hub" }
-            else -> Scaffold(
-                containerColor = androidx.compose.ui.graphics.Color.Transparent,
-                bottomBar = {
-                    if (route == "hub") HubBar(route) { route = it }
-                },
-            ) { pad ->
-                // پدینگ Scaffold همین‌جا (محتوای خودِ Scaffold) خوانده می‌شود؛ خواندن
-                // مقدار مشتق‌شده از اندازه‌گیری در یک زیرترکیب‌بندی تودرتو، Composer
-                // را در فاز draw خراب می‌کرد.
-                val bottomPad = pad.calculateBottomPadding()
-
-                // محو شدن ملایم بین مسیرها بدون AnimatedContent: آنتی‌میشن‌اسکپ‌ها
-                // محتوای مقصد را در فاز اندازه‌گیری می‌سازند و با Scaffold/LazyColumn
-                // تودرتو (هر دو SubcomposeLayout) باعث
-                // ArrayIndexOutOfBoundsException در Composer می‌شدند.
+            else -> {
+                // چیدمان اصلی بدون Scaffold است: اسلات‌های SubcomposeLayout در
+                // فاز اندازه‌گیری ساخته می‌شوند و اگر محتوای تازه (صفحه‌ای که خودش
+                // Scaffold/LazyColumn دارد) داخل آن‌ها ترکیب شود، Composer خراب
+                // می‌شود و اپ با ArrayIndexOutOfBoundsException در IntStack.peek2
+                // کرش می‌کند (کلیک روی «مدل و پرووایدر»/«ابزارها» از خانه).
                 val fade = remember { Animatable(1f) }
                 LaunchedEffect(route) {
                     fade.snapTo(0f)
                     fade.animateTo(1f, animationSpec = tween(durationMillis = 180))
                 }
-
-                Box(
-                    Modifier.fillMaxSize()
-                        .padding(bottom = bottomPad)
-                        .graphicsLayer { alpha = fade.value },
-                ) {
-                    when (route) {
-                        "hub" -> HubScreen(status, sid, "", onGo = { route = it })
-                        "chat" -> ChatScreen(
-                            engine = engine,
-                            title = "",
-                            statusLive = status == RpcEvent.State.CONNECTED,
-                            onNewSession = { scope.launch { HermesRepo.newSession("گفت‌وگوی جدید") } },
-                            onOpenSessions = { route = "sessions" },
-                            onOpenModel = { route = "model" },
-                        )
-                        "sessions" -> SessionsScreen({ route = "hub" }) { id -> HermesRepo.startSession(id); sid = id; route = "chat" }
-                        "model" -> ModelScreen { route = "hub" }
-                        "tools" -> ToolsScreenProxy { route = "hub" }
-                        "skills" -> SkillsScreen { route = "hub" }
-                        "cron" -> CronScreen { route = "hub" }
-                        "terminal" -> TerminalScreen { route = "hub" }
-                        "settings" -> SettingsScreen({ route = "hub" }) { route = ""; ready = false }
-                        else -> HubScreen(status, sid, "", onGo = { route = it })
+                Column(Modifier.fillMaxSize()) {
+                    Box(
+                        Modifier.weight(1f).fillMaxWidth()
+                            .graphicsLayer { alpha = fade.value },
+                    ) {
+                        when (route) {
+                            "hub" -> HubScreen(status, sid, "", onGo = { route = it })
+                            "chat" -> ChatScreen(
+                                engine = engine,
+                                title = "",
+                                statusLive = status == RpcEvent.State.CONNECTED,
+                                onNewSession = { scope.launch { HermesRepo.newSession("گفت‌وگوی جدید") } },
+                                onOpenSessions = { route = "sessions" },
+                                onOpenModel = { route = "model" },
+                            )
+                            "sessions" -> SessionsScreen({ route = "hub" }) { id -> HermesRepo.startSession(id); sid = id; route = "chat" }
+                            "model" -> ModelScreen { route = "hub" }
+                            "tools" -> ToolsScreenProxy { route = "hub" }
+                            "skills" -> SkillsScreen { route = "hub" }
+                            "cron" -> CronScreen { route = "hub" }
+                            "terminal" -> TerminalScreen { route = "hub" }
+                            "settings" -> SettingsScreen({ route = "hub" }) { route = ""; ready = false }
+                            else -> HubScreen(status, sid, "", onGo = { route = it })
+                        }
                     }
+                    if (route == "hub") HubBar(route) { route = it }
                 }
             }
         }
