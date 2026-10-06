@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
@@ -15,8 +16,8 @@ android {
         // داده خودشان را ندارند (محدودیت SELinux). runtime تعبیهشدهٔ هرمس
         // (proot + rootfs) برای اجرا به این مجوز نیاز دارد.
         targetSdk = 28
-        versionCode = 4
-        versionName = "1.3.0"
+        versionCode = 5
+        versionName = "1.3.1"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -37,7 +38,8 @@ android {
     kotlinOptions { jvmTarget = "17" }
 
     buildFeatures { compose = true }
-    composeOptions { kotlinCompilerExtensionVersion = "1.5.10" }
+    // از Kotlin 2.0 به بعد نسخهٔ کامپایلر Compose از خود افزونهٔ
+    // org.jetbrains.kotlin.plugin.compose می‌آید و composeOptions لازم نیست.
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
         // کتابخانههای bionic (proot و loader) باید به صورت فایل واقعی روی حافظه
@@ -55,7 +57,8 @@ android {
 }
 
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2024.09.03"))
+    // 2024.12.01 → Compose 1.7.6 + Material3 1.3.1 (آخرین وصله‌های خط 1.7).
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")

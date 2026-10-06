@@ -4,16 +4,13 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Build
@@ -25,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
@@ -110,39 +108,52 @@ private fun Root() {
                 CircularProgressIndicator(color = ir.hermes.mobile.ui.theme.Gold)
             }
             !ready && route == "" -> ConnectScreen { ready = true; route = "hub" }
-            else -> Scaffold(
-                containerColor = androidx.compose.ui.graphics.Color.Transparent,
-                bottomBar = {
-                    if (route == "hub") HubBar(route) { route = it }
-                },
-            ) { pad ->
-                AnimatedContent(
-                    targetState = route,
-                    transitionSpec = { fadeIn() togetherWith fadeOut() },
-                    label = "nav",
-                ) { r ->
-                    Box(Modifier.fillMaxSize().padding(if (r == "hub") PaddingValues(bottom = pad.calculateBottomPadding()) else PaddingValues())) {
-                        when (r) {
-                            "hub" -> HubScreen(status, sid, "", onGo = { route = it })
-                            "chat" -> ChatScreen(
-                                engine = engine,
-                                title = "",
-                                statusLive = status == RpcEvent.State.CONNECTED,
-                                onNewSession = { scope.launch { HermesRepo.newSession("گفت‌وگوی جدید") } },
-                                onOpenSessions = { route = "sessions" },
-                                onOpenModel = { route = "model" },
-                            )
-                            "sessions" -> SessionsScreen({ route = "hub" }) { id -> HermesRepo.startSession(id); sid = id; route = "chat" }
-                            "model" -> ModelScreen { route = "hub" }
-                            "tools" -> ToolsScreenProxy { route = "hub" }
-                            "skills" -> SkillsScreen { route = "hub" }
-                            "cron" -> CronScreen { route = "hub" }
-                            "terminal" -> TerminalScreen { route = "hub" }
-                            "settings" -> SettingsScreen({ route = "hub" }) { route = ""; ready = false }
-                            else -> HubScreen(status, sid, "", onGo = { route = it })
-                        }
+            // نکتهٔ مهم: اینجا عمداً از Scaffold/AnimatedContent استفاده نمی‌کنیم.
+            //
+            // ترکیب قبلی «Scaffold ریشه → AnimatedContent → Scaffold صفحهٔ مقصد»
+            // سه لایه SubcomposeLayout تودرتو می‌ساخت و هنگام رفتن به صفحه‌ای که
+            // خودش Scaffold دارد، مخزن گروه‌های Compose به‌هم می‌ریخت:
+            //   java.lang.ArrayIndexOutOfBoundsException: index=-2
+            //     at androidx.compose.runtime.IntStack.peek2
+            //     at androidx.compose.runtime.ComposerImpl.end/endGroup/endRoot
+            // حالا محتوا و نوار پایین در یک Column چیده می‌شوند و در هر لحظه
+            // فقط یک صفحه ترکیب‌بندی می‌شود.
+            else -> Column(Modifier.fillMaxSize()) {
+                // فِید ملایم هنگام تعویض صفحه (بدون AnimatedContent).
+                var shown by remember { mutableStateOf(route) }
+                val fade = remember { Animatable(1f) }
+                LaunchedEffect(route) {
+                    if (shown != route) {
+                        fade.snapTo(0f)
+                        shown = route
+                        fade.animateTo(1f, tween(durationMillis = 180))
                     }
                 }
+                Box(
+                    Modifier.weight(1f).fillMaxWidth()
+                        .graphicsLayer { alpha = fade.value }
+                ) {
+                    when (shown) {
+                        "hub" -> HubScreen(status, sid, "", onGo = { route = it })
+                        "chat" -> ChatScreen(
+                            engine = engine,
+                            title = "",
+                            statusLive = status == RpcEvent.State.CONNECTED,
+                            onNewSession = { scope.launch { HermesRepo.newSession("گفت‌وگوی جدید") } },
+                            onOpenSessions = { route = "sessions" },
+                            onOpenModel = { route = "model" },
+                        )
+                        "sessions" -> SessionsScreen({ route = "hub" }) { id -> HermesRepo.startSession(id); sid = id; route = "chat" }
+                        "model" -> ModelScreen { route = "hub" }
+                        "tools" -> ToolsScreenProxy { route = "hub" }
+                        "skills" -> SkillsScreen { route = "hub" }
+                        "cron" -> CronScreen { route = "hub" }
+                        "terminal" -> TerminalScreen { route = "hub" }
+                        "settings" -> SettingsScreen({ route = "hub" }) { route = ""; ready = false }
+                        else -> HubScreen(status, sid, "", onGo = { route = it })
+                    }
+                }
+                if (route == "hub") HubBar(route) { route = it }
             }
         }
     }

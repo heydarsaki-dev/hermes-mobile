@@ -12,19 +12,32 @@ object Jalali {
         "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"
     )
 
-    /** میلادی → شمسی */
+    /**
+     * میلادی → شمسی (الگوریتم استانداردِ تبدیل بر پایهٔ شمارهٔ روز).
+     *
+     * نسخهٔ قبلی چند اشکال داشت و برای مثلاً ۲۰۲۶-۱۰-۰۶ سال ‎-۹۸۳‎ و روز ۰
+     * می‌داد (در گزارش کرش دیده شد: «۰ اسفند ‎-۹۸۳»).
+     */
     fun gregorianToJalali(gy: Int, gm: Int, gd: Int): Triple<Int, Int, Int> {
-        var g = gy - 1600
-        val gmIdx = gm - 1
-        if (gm <= 2) g -= 1
-        var days = 365 * g + (g + 3) / 4 - (g + 99) / 100 + (g + 399) / 400 - 80 + gd + gDays[gmIdx]
+        // بر اساس الگوریتم شناختهشدهٔ jalaali.
+        val gy2 = if (gm > 2) gy + 1 else gy
+        var days = 355666 + 365 * gy +
+            (gy2 + 3) / 4 - (gy2 + 99) / 100 + (gy2 + 399) / 400 +
+            gd + gDays[gm - 1]
         var jy = -1595 + 33 * (days / 12053)
         days %= 12053
         jy += 4 * (days / 1461)
         days %= 1461
-        if (days > 365) { jy += (days - 1) / 365; days = (days - 1) % 365 }
-        return if (days < 186) Triple(jy + days / 31, days % 31 + 1, 0)
-        else Triple(jy + 186 + (days - 186) / 30, (days - 186) % 30 + 1, 0)
+        if (days > 365) {
+            jy += (days - 1) / 365
+            days = (days - 1) % 365
+        }
+        // «days» اکنون شمارهٔ روز از ابتدای سال شمسی است (صفر‑مبنا).
+        return if (days < 186) {
+            Triple(jy, 1 + days / 31, 1 + days % 31)
+        } else {
+            Triple(jy, 7 + (days - 186) / 30, 1 + (days - 186) % 30)
+        }
     }
 
     fun format(millis: Long = System.currentTimeMillis()): String {
