@@ -54,6 +54,35 @@ object HermesRuntime {
         return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
     }
 
+    /**
+     * انتخاب پورت برای سرور درون‌اپی.
+     *
+     * اگر نسخهٔ قبلی سرور به هر دلیلی هنوز زنده باشد (مثلاً اپ توسط سیستم kill
+     * شده ولی فرآیند فرزند proot باقی مانده)، پورت پیش‌فرض اشغال است و سرور تازه
+     * موقع bind شکست می‌خورد؛ آن‌وقت کاربر فقط پیام «سرور بسته شد» را می‌دید و
+     * هیچ راهی برای درست‌کردنش نداشت. چون توکن آن سرور قدیمی را نمی‌دانیم،
+     * نمی‌توانیم به آن وصل شویم؛ پس اولین پورت آزاد بعدی را برمی‌داریم.
+     */
+    private fun freePort(): Int {
+        for (p in RootfsInstaller.PREFERRED_PORT until RootfsInstaller.PREFERRED_PORT + 5) {
+            if (!isPortBusy(p)) {
+                if (p != RootfsInstaller.PREFERRED_PORT) log("پورت ${RootfsInstaller.PREFERRED_PORT} اشغال بود؛ پورت $p استفاده می‌شود")
+                return p
+            }
+        }
+        return RootfsInstaller.PREFERRED_PORT
+    }
+
+    /** آیا چیزی روی این پورت localhost گوش می‌دهد؟ */
+    private fun isPortBusy(port: Int): Boolean = try {
+        java.net.Socket().use { s ->
+            s.connect(java.net.InetSocketAddress("127.0.0.1", port), 300)
+            true
+        }
+    } catch (_: Throwable) {
+        false
+    }
+
     private fun log(line: String) {
         _logs.value = (_logs.value + line).takeLast(300)
     }
@@ -76,7 +105,7 @@ object HermesRuntime {
         }
 
         val token = generateToken()
-        val port = RootfsInstaller.PREFERRED_PORT
+        val port = freePort()
         _state.value = Snapshot(State.STARTING, token = token, message = "راهاندازی سرور هرمس...")
         _logs.value = emptyList()
 
