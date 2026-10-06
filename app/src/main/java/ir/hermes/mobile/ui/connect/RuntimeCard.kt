@@ -68,7 +68,8 @@ fun RuntimeCard(onReady: (url: String, token: String) -> Unit) {
         }
         Spacer(Modifier.height(10.dp))
         Text(
-            "ترموکس لازم نیست؛ سرور هرمس درون خودِ گوشی نصب و اجرا میشود.",
+            "ترموکس لازم نیست؛ سرور هرمس درون خودِ گوشی نصب و اجرا میشود.\n" +
+                "دادهٔ سیستمی (~۷۶ مگابایت) هنگام نصب از اینترنت دانلود میشود، پس بهتر است به وای‌فای وصل باشید.",
             style = MaterialTheme.typography.bodySmall, color = TextMid, textAlign = TextAlign.Center,
         )
 
@@ -107,7 +108,7 @@ fun RuntimeCard(onReady: (url: String, token: String) -> Unit) {
 
         when {
             installing -> GhostButton("در حال نصب...", onClick = {}, modifier = Modifier.fillMaxWidth(), color = TextMid)
-            !installed -> PrimaryButton("نصب هرمس درون اپ (~۷۶ مگ دانلود)", onClick = {
+            !installed -> PrimaryButton("نصب هرمس درون اپ (دانلود ۷۶ مگابایت)", onClick = {
                 installing = true
                 localError = null
                 scope.launch {
