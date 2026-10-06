@@ -104,6 +104,10 @@ object HermesRuntime {
             return
         }
 
+        // خودترمیمی rootfs: اگر پکیج unittest پایتون حذف شده باشد برگردانده می‌شود؛
+        // وگرنه هر نوبت چت با «No module named 'unittest'» شکست می‌خورد
+        runCatching { RootfsInstaller.ensurePythonPatches(app) }
+
         val token = generateToken()
         val port = freePort()
         _state.value = Snapshot(State.STARTING, token = token, message = "راهاندازی سرور هرمس...")

@@ -61,6 +61,16 @@ object RootfsInstaller {
     private const val MAX_ATTEMPTS = 3
     private const val USER_AGENT = "HermesMobile"
 
+    /**
+     * فایل‌های پکیج `unittest` کتابخانهٔ استاندارد پایتون که باید در rootfs موجود
+     * باشند (پایتون ۳.۱۲.۳؛ بایت‌به‌بایت از همان نسخه برداشته شده‌اند).
+     */
+    private val UNITTEST_FILES = listOf(
+        "__init__.py", "__main__.py", "_log.py", "async_case.py", "case.py",
+        "loader.py", "main.py", "mock.py", "result.py", "runner.py",
+        "signals.py", "suite.py", "util.py",
+    )
+
     fun rootfsDir(ctx: Context): File = File(ctx.filesDir, "runtime/rootfs")
     fun binDir(ctx: Context): File = File(ctx.filesDir, "runtime/bin")
     fun libDir(ctx: Context): File = File(ctx.filesDir, "runtime/lib")
@@ -84,6 +94,52 @@ object RootfsInstaller {
         if (m.readText().trim() != VERSION.toString()) return false
         // اعتبارسنجی واقعی: نقطهٔ ورود هرمس داخل venv
         return File(rootfsDir(ctx), "opt/hermes-venv/bin/hermes").exists()
+    }
+
+    /**
+     * ترمیم کتابخانهٔ استاندارد پایتون در rootfs.
+     *
+     * در rootfs منتشرشده، پکیج `unittest` از کتابخانهٔ استاندارد حذف شده بود؛ اما
+     * هرمس ۰.۱۹.۰ در زمان اجرا و دقیقاً در مسیر استریم پاسخ
+     * `from unittest.mock import Mock` می‌زند (`agent/conversation_loop.py` و
+     * `run_agent.py`). نتیجه این بود که هر نوبت چت با خطای
+     * «Streaming failed before delivery: No module named 'unittest'» شکست می‌خورد.
+     *
+     * همان فایل‌های اصلی پایتون ۳.۱۲.۳ از داخل APK به stdlib مهمان برگردانده
+     * می‌شوند. چون از [HermesRuntime.start] هم صدا زده می‌شود، نصب‌های قدیمی هم
+     * خودترمیم می‌شوند و نیازی به دانلود دوبارهٔ ۷۶ مگابایتی rootfs نیست.
+     */
+    @JvmStatic
+    fun ensurePythonPatches(ctx: Context) {
+        val stdlib = pythonStdlibDir(ctx) ?: return
+        val dst = File(stdlib, "unittest")
+        // اگر از قبل سالم است، کاری نکن (این مسیر در هر اجرای اپ چک می‌شود)
+        if (File(dst, "__init__.py").exists() && File(dst, "mock.py").exists()) return
+
+        dst.mkdirs()
+        var copied = 0
+        for (name in UNITTEST_FILES) {
+            try {
+                copyAsset(ctx, "runtime/py/unittest/$name", File(dst, name))
+                copied++
+            } catch (t: Throwable) {
+                CrashLogger.breadcrumb("ترمیم unittest ناموفق ($name): ${t.message}")
+            }
+        }
+        if (copied == UNITTEST_FILES.size) {
+            CrashLogger.breadcrumb("ترمیم کتابخانهٔ unittest انجام شد")
+        } else {
+            // ناقص ماند → نشانگر را بردار تا دفعهٔ بعد کامل از نو تلاش شود
+            runCatching { File(dst, "mock.py").delete() }
+        }
+    }
+
+    /** پوشهٔ کتابخانهٔ استاندارد پایتون مهمان (مثل `usr/lib/python3.12`) */
+    private fun pythonStdlibDir(ctx: Context): File? {
+        val dirs = File(rootfsDir(ctx), "usr/lib")
+            .listFiles { f -> f.isDirectory && f.name.startsWith("python3.") }
+            ?: return null
+        return dirs.firstOrNull { File(it, "os.py").exists() } ?: dirs.firstOrNull()
     }
 
     fun hasEnoughFreeSpace(): Boolean = try {
@@ -181,6 +237,9 @@ object RootfsInstaller {
         }
         // پوشهٔ ریشه باید برای هرمس قابل نوشتن باشد (با -0 هم لازم است)
         runCatching { File(rootfs, "root").mkdirs() }
+
+        // ۵) ترمیم کتابخانهٔ استاندارد پایتون (پکیج unittest در rootfs حذف شده بود)
+        ensurePythonPatches(ctx)
 
         marker(ctx).writeText(VERSION.toString())
         onProgress(1.0, "نصب هرمس کامل شد")
