@@ -44,6 +44,14 @@ android {
         // استخراج شوند تا قابل اجرا باشند.
         jniLibs { useLegacyPackaging = true }
     }
+
+    lint {
+        // app intentionally targets API 28 so the embedded proot runtime can exec
+        // binaries from its data dir. ExpiredTargetSdkVersion only matters for
+        // Google Play distribution; this app ships as a sideloaded APK, so we
+        // disable that single check instead of changing targetSdk.
+        disable += "ExpiredTargetSdkVersion"
+    }
 }
 
 dependencies {
