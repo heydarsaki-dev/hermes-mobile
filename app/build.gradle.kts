@@ -16,18 +16,39 @@ android {
         // داده خودشان را ندارند (محدودیت SELinux). runtime تعبیهشدهٔ هرمس
         // (proot + rootfs) برای اجرا به این مجوز نیاز دارد.
         targetSdk = 28
-        versionCode = 6
-        versionName = "1.3.2"
+        versionCode = 7
+        versionName = "1.3.3"
         vectorDrawables { useSupportLibrary = true }
+    }
+
+    // کلید امضای ثابت پروژه. همهٔ بیلدها با همین کلید امضا می‌شوند تا نسخهٔ بعدی
+    // بتواند روی نسخهٔ نصب‌شده آپدیت شود (وگرنه Android خطای «امضا مطابقت ندارد»
+    // می‌دهد و باید اپ را حذف کرد). فایل خام در CI از keystore/hermes-release.p12.b64
+    // ساخته می‌شود؛ اگر موجود نبود (بیلد محلی بدون کلید) به کلید دیباگ برمی‌گردیم.
+    val stableKeystore = rootProject.file("keystore/hermes-release.p12")
+    val hasStableKeystore = stableKeystore.exists()
+    signingConfigs {
+        if (hasStableKeystore) {
+            create("stable") {
+                storeFile = stableKeystore
+                storeType = "PKCS12"
+                storePassword = "hermesmobile"
+                keyAlias = "hermes"
+                keyPassword = "hermesmobile"
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasStableKeystore) signingConfigs.getByName("stable")
+                            else signingConfigs.getByName("debug")
         }
         debug {
             applicationIdSuffix = ".debug"
+            // همان کلید ثابت برای دیباگ هم استفاده می‌شود تا آپدیت نسخهٔ دیباگ هم ممکن باشد.
+            if (hasStableKeystore) signingConfig = signingConfigs.getByName("stable")
         }
     }
 

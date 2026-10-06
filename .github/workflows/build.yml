@@ -36,6 +36,13 @@ jobs:
           key: gradle-${{ hashFiles('**/*.gradle.kts') }}
           restore-keys: gradle-
 
+      # کلید امضای ثابت؛ یکسان در همهٔ بیلدها تا آپدیت روی‌هم نصب شود.
+      - name: آماده‌سازی کلید امضای ثابت
+        run: |
+          mkdir -p keystore
+          base64 -d keystore/hermes-release.p12.b64 > keystore/hermes-release.p12
+          ls -l keystore/hermes-release.p12
+
       - name: ساخت APK دیباگ
         run: gradle assembleDebug --no-daemon --stacktrace
 
