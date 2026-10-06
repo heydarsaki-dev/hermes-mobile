@@ -139,12 +139,24 @@ private fun Root() {
                             engine = engine,
                             title = "",
                             statusLive = status == RpcEvent.State.CONNECTED,
-                            onNewSession = { scope.launch { HermesRepo.newSession("گفت‌وگوی جدید") } },
+                            onNewSession = {
+                                scope.launch {
+                                    HermesRepo.createSession("گفت‌وگوی جدید")?.let { id ->
+                                        sid = id
+                                        engine.resetForNewSession()
+                                    }
+                                }
+                            },
                             onOpenSessions = { route = "sessions" },
                             onOpenModel = { route = "model" },
                         )
                         "sessions" -> SessionsScreen({ route = "hub" }) { id -> HermesRepo.startSession(id); sid = id; route = "chat" }
-                        "model" -> ModelScreen { route = "hub" }
+                        "model" -> ModelScreen(
+                            onBack = { route = "hub" },
+                            // هر نشست هرمس مدلی را که با آن ساخته شده نگه می‌دارد؛
+                            // پس بعد از تغییر مدل، نشست فعال پاک و چت تازه می‌شود.
+                            onModelChanged = { HermesRepo.clearSession(); engine.resetForNewSession() },
+                        )
                         "tools" -> ToolsScreenProxy { route = "hub" }
                         "skills" -> SkillsScreen { route = "hub" }
                         "cron" -> CronScreen { route = "hub" }

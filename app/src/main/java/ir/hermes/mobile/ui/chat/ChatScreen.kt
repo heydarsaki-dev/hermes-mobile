@@ -53,6 +53,16 @@ fun ChatScreen(
         if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1)
     }
 
+    // اگر نوبتی بیش از حد طول بکشد، اپ نباید بی‌صدا در «در حال فکر کردن» بماند.
+    LaunchedEffect(st) {
+        if (st == TurnState.THINKING || st == TurnState.STREAMING || st == TurnState.TOOL) {
+            kotlinx.coroutines.delay(240_000)
+            if (engine.state.value == TurnState.THINKING) {
+                engine.notice.value = "هنوز پاسخی از سرور نیامده؛ می‌توانید با دکمهٔ توقف متوقف کنید."
+            }
+        }
+    }
+
     Scaffold(
         containerColor = Color.Transparent,
         topBar = {
@@ -138,7 +148,9 @@ fun ChatScreen(
                         Box(
                             Modifier.size(52.dp).clip(CircleShape).background(Gold)
                                 .clickable(enabled = input.isNotBlank()) {
-                                    engine.send(input); input = ""
+                                    val outgoing = input
+                                    input = ""
+                                    scope.launch { engine.send(outgoing) }
                                 },
                             contentAlignment = Alignment.Center,
                         ) { Icon(Icons.AutoMirrored.Filled.Send, "ارسال", tint = Ink0) }

@@ -43,7 +43,7 @@ import kotlinx.serialization.json.JsonPrimitive
  * `config.set`؛ چون `config.set` فقط کلیدهای ثابت را می‌پذیرد و پرووایدر نمی‌سازد.
  */
 @Composable
-fun ModelScreen(onBack: () -> Unit) {
+fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
 
     var loading by remember { mutableStateOf(true) }
@@ -81,7 +81,9 @@ fun ModelScreen(onBack: () -> Unit) {
                     val o = J.obj(r)
                     if (J.bool(o, "confirm_required")) {
                         error = J.str(o, "confirm_message", "انتخاب این مدل نیاز به تأیید دارد")
-                    } else load()
+                    } else {
+                        HermesRepo.clearSession(); onModelChanged(); load()
+                    }
                 }
                 .onFailure { error = it.message }
         }
@@ -125,6 +127,11 @@ fun ModelScreen(onBack: () -> Unit) {
                     } else {
                         Text("مدل فعالی از سرور خوانده نشد", style = MaterialTheme.typography.bodySmall, color = TextMid)
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "تغییر مدل روی نشست‌های جدید اعمال می‌شود؛ در چت با دکمهٔ «نشست جدید» یک گفت‌وگوی تازه بسازید.",
+                        style = MaterialTheme.typography.bodySmall, color = TextLow,
+                    )
                 }
             }
 
@@ -173,7 +180,7 @@ fun ModelScreen(onBack: () -> Unit) {
                     onActivate = {
                         scope.launch {
                             HermesRepo.activateCustomEndpoint(J.str(e, "id"))
-                                .onSuccess { load() }
+                                .onSuccess { HermesRepo.clearSession(); onModelChanged(); load() }
                                 .onFailure { error = it.message }
                         }
                     },
@@ -196,7 +203,11 @@ fun ModelScreen(onBack: () -> Unit) {
     if (showAdd) {
         AddProviderDialog(
             onDismiss = { showAdd = false },
-            onSaved = { showAdd = false; scope.launch { load(refresh = true) } },
+            onSaved = {
+                showAdd = false
+                HermesRepo.clearSession(); onModelChanged()
+                scope.launch { load(refresh = true) }
+            },
         )
     }
 

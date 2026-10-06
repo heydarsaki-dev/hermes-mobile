@@ -42,7 +42,12 @@ class ChatEngine {
         if (messages.value.isEmpty()) messages.value = items
     }
 
-    fun send(text: String) {
+    /**
+     * ارسال پیام. تا وقتی پاسخ JSON-RPC سرور خوانده نشود خبری از وضعیت نهایی نیست.
+     * اگر سرور درخواست را رد کند (مثلاً نشست نامعتبر) بلافاصله خطا نمایش داده می‌شود
+     * تا UI در «در حال فکر کردن» گیر نکند.
+     */
+    suspend fun send(text: String) {
         val clean = text.trim()
         if (clean.isEmpty() || state.value == TurnState.THINKING ||
             state.value == TurnState.STREAMING || state.value == TurnState.TOOL
@@ -53,13 +58,40 @@ class ChatEngine {
         state.value = TurnState.THINKING
         streaming.value = ""
 
-        val sid = HermesRepo.socket.sessionId
+        // بدون نشست معتبر، هرمس درخواست را با خطا رد می‌کند.
+        val sid = HermesRepo.ensureSession()
+        if (sid.isBlank()) {
+            fail("نشست هرمس ساخته نشد — اتصال به سرور را بررسی کنید")
+            return
+        }
         val params = buildJsonObject {
-            if (sid.isNotBlank()) put("session_id", sid)
+            put("session_id", sid)
             put("text", clean)
         }
-        HermesRepo.socket.call("prompt.submit", params)
+        HermesRepo.rpc("prompt.submit", params).onFailure { e ->
+            // اگر سرور هنوز رویدادی نفرستاده، خطای ارسال را نشان بده.
+            if (state.value == TurnState.THINKING) fail(e.message ?: "ارسال پیام ناموفق بود")
+        }
         HermesRepo.addLog("ارسال پیام")
+    }
+
+    /** نمایش خطای قطعی برای نوبت جاری (حبهٔ راهنما + پیام خطا). */
+    private fun fail(msg: String) {
+        state.value = TurnState.ERROR
+        streaming.value = ""
+        val m = ChatMessage(newId(), MsgRole.ASSISTANT)
+        m.error = msg
+        messages.value = messages.value + m
+        assistantMsg = null
+    }
+
+    /** پاک‌سازی برای شروع یک نشست جدید. */
+    fun resetForNewSession() {
+        messages.value = emptyList()
+        state.value = TurnState.IDLE
+        streaming.value = ""
+        notice.value = null
+        assistantMsg = null
     }
 
     fun interrupt() {
@@ -120,9 +152,16 @@ class ChatEngine {
                 state.value = TurnState.WAITING_APPROVAL
             }
             "message.complete", "turn.complete" -> {
+                val pt = J.str(p, "text")
                 val m = assistantMsg
-                if (m != null && m.text.isEmpty()) m.text = streaming.value
-                m?.pending = false
+                if (m != null) {
+                    if (m.text.isEmpty()) m.text = if (pt.isNotEmpty()) pt else streaming.value
+                    m.pending = false
+                } else if (pt.isNotEmpty() || streaming.value.isNotEmpty()) {
+                    messages.value = messages.value +
+                        ChatMessage(newId(), MsgRole.ASSISTANT, if (pt.isNotEmpty()) pt else streaming.value)
+                }
+                if (J.str(p, "status") == "error") notice.value = pt.ifBlank { "خطا در اجرای نوبت" }
                 state.value = TurnState.DONE
                 streaming.value = ""
                 assistantMsg = null

@@ -1,7 +1,10 @@
 package ir.hermes.mobile.core.net
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
+import java.util.concurrent.ConcurrentHashMap
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
@@ -31,6 +34,13 @@ class HermesSocket(
 
     private val _status = MutableStateFlow(RpcEvent.State.CLOSED)
     val status: StateFlow<RpcEvent.State> = _status
+
+    /**
+     * پاسخ‌های در انتظار. پیش از ارسال ثبت می‌شوند تا پاسخ سریعِ سرور از دست نرود
+     * (قبلاً با SharedFlow و replay=0 ممکن بود پاسخ پیش از شروع اشتراک برسد و گم شود
+     * و UI برای همیشه در «در حال فکر کردن» بماند).
+     */
+    private val awaiters = ConcurrentHashMap<String, CompletableDeferred<RpcEvent.Response>>()
 
     @Volatile var sessionId: String = ""
 
@@ -90,7 +100,9 @@ class HermesSocket(
                 val id = root["id"]?.jsonPrimitive?.contentOrNull ?: return
                 val err = root["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
                 val res = root["result"]
-                _events.tryEmit(RpcEvent.Response(id, res, err))
+                val response = RpcEvent.Response(id, res, err)
+                awaiters.remove(id)?.complete(response)
+                _events.tryEmit(response)
             }
         }.onFailure { onLog("خطای تجزیه: ${it.message}") }
     }
@@ -103,6 +115,29 @@ class HermesSocket(
         }
         socket?.send(msg.toString())
         return id
+    }
+
+    /**
+     * ارسال درخواست و انتظار برای پاسخ متناظر. ثبت منتظر‌شونده *قبل* از ارسال انجام می‌شود
+     * تا هیچ پاسخی گم نشود؛ در پایان هم منتظر‌شونده پاک می‌شود.
+     */
+    suspend fun callAwait(
+        method: String,
+        params: JsonObject = JsonObject(emptyMap()),
+        timeoutMs: Long = 30_000,
+    ): RpcEvent.Response {
+        val id = ids.incrementAndGet().toString()
+        val deferred = CompletableDeferred<RpcEvent.Response>()
+        awaiters[id] = deferred
+        try {
+            val msg = buildJsonObject {
+                put("jsonrpc", "2.0"); put("id", id); put("method", method); put("params", params)
+            }
+            socket?.send(msg.toString())
+            return withTimeout(timeoutMs) { deferred.await() }
+        } finally {
+            awaiters.remove(id)
+        }
     }
 
     /** ارسال دستور slash مانند /model */

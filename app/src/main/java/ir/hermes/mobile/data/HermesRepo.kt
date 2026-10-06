@@ -46,22 +46,48 @@ object HermesRepo {
 
     fun startSession(id: String) { socket.sessionId = id }
 
-    /** ارسال متد JSON-RPC با انتظار پاسخ */
-    suspend fun rpc(method: String, params: JsonObject = JsonObject(emptyMap())): Result<JsonElement> =
-        kotlinx.coroutines.withTimeoutOrNull(30_000) {
-            val id = socket.call(method, params)
-            val r = socket.events.first { it is RpcEvent.Response && it.id == id }
-            (r as RpcEvent.Response).let { resp ->
-                if (resp.error != null) Result.failure(RuntimeException(resp.error))
-                else Result.success(resp.result ?: JsonObject(emptyMap()))
-            }
-        } ?: Result.failure(RuntimeException("پاسخی از سرور دریافت نشد"))
+    /**
+     * ارسال متد JSON-RPC با انتظار پاسخ.
+     *
+     * توجه: پاسخ‌ها ممکن است *خطا* باشند (مثل «session not found»). قبلاً این خطاها
+     * خوانده نمی‌شدند و اگر سرور یک درخواست را رد می‌کرد، UI بی‌نهایت منتظر می‌ماند.
+     */
+    suspend fun rpc(method: String, params: JsonObject = JsonObject(emptyMap())): Result<JsonElement> = try {
+        val resp = socket.callAwait(method, params)
+        if (resp.error != null) Result.failure(RuntimeException(resp.error))
+        else Result.success(resp.result ?: JsonObject(emptyMap()))
+    } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+        Result.failure(RuntimeException("پاسخی از سرور دریافت نشد"))
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Result.failure(RuntimeException(e.message ?: "خطای نامشخص"))
+    }
 
     // ---------- نشست‌ها ----------
     suspend fun sessions(): Result<JsonElement> = rpc("session.list")
 
     suspend fun newSession(title: String? = null): Result<JsonElement> =
         rpc("session.create", buildJsonObject { title?.let { put("title", it) } })
+
+    /** ایجاد نشست جدید و برگرداندن شناسهٔ آن؛ در صورت شکست null. */
+    suspend fun createSession(title: String? = null): String? {
+        val id = newSession(title).getOrNull()?.let { J.str(J.obj(it), "session_id") } ?: ""
+        if (id.isNotBlank()) startSession(id)
+        return id.ifBlank { null }
+    }
+
+    /** شناسهٔ نشست فعال؛ اگر نبود یکی می‌سازد. بدون نشست معتبر، prompt.submit رد می‌شود. */
+    suspend fun ensureSession(): String {
+        socket.sessionId.takeIf { it.isNotBlank() }?.let { return it }
+        return createSession(null) ?: ""
+    }
+
+    /**
+     * پاک‌کردن نشست فعال. نشست بعدی با تنظیمات/مدل جاری ساخته می‌شود؛
+     * لازم است چون هرمس مدل هر نشست را در زمان ساخت آن ثابت می‌کند.
+     */
+    fun clearSession() { socket.sessionId = "" }
 
     suspend fun resume(id: String): Result<JsonElement> = rpc("session.resume", str("session_id", id))
 
