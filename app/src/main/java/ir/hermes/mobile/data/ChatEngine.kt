@@ -169,7 +169,11 @@ class ChatEngine {
             "turn.error", "error" -> {
                 val msg = J.str(p, "message", J.str(p, "error", "خطای نامشخص"))
                 val cur = assistantMsg
-                if (cur != null) { cur.pending = false; cur.error = msg } else { notice.value = msg }
+                if (cur != null) { cur.pending = false; cur.error = msg }
+                val low = msg.lowercase()
+                notice.value = if (low.contains("timed out") || low.contains("initializ")) {
+                    "راهنما: اتصال پرووایدر سفارشی را با دکمهٔ «تست» بررسی کنید و از «تنظیمات → لاگ سرور هرمس» دلیل دقیق را ببینید."
+                } else if (cur == null) msg else null
                 state.value = TurnState.ERROR
                 streaming.value = ""
                 assistantMsg = null

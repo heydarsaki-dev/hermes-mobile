@@ -39,6 +39,8 @@ fun SettingsScreen(onBack: () -> Unit, onLoggedOut: () -> Unit) {
     var token by remember { mutableStateOf(HermesRepo.api.token) }
     var usage by remember { mutableStateOf<JsonObject?>(null) }
     var msg by remember { mutableStateOf<String?>(null) }
+    var serverLog by remember { mutableStateOf<String?>(null) }
+    var logBusy by remember { mutableStateOf(false) }
 
     // گزارش‌های کرش از حافظهٔ اپ خوانده می‌شوند؛ با هر تغییر نسخهٔ آن دوباره
     // خوانده می‌شوند تا بعد از «پاک کردن» فهرست به‌روز شود.
@@ -146,6 +148,71 @@ fun SettingsScreen(onBack: () -> Unit, onLoggedOut: () -> Unit) {
                         color = Rose,
                         icon = Icons.Default.Delete,
                     )
+                }
+            }
+
+            // ------------------------------------------------------------------
+            // لاگ سرور: برای دیدن دلیل خطاهای سمت هرمس (مثل agent initialization
+            // timed out). از shell.exec استفاده می‌کند و آخرین خطوط لاگ را می‌خواند.
+            // ------------------------------------------------------------------
+            Spacer(Modifier.height(18.dp))
+            SectionTitle("لاگ سرور هرمس")
+            GlassCard(Modifier.fillMaxWidth(), borderColor = Cyan.copy(alpha = 0.25f)) {
+                Text(
+                    "اگر خطایی مثل «Agent initialization timed out» دیدید، اینجا آخرین خطوط لاگ هرمس را ببینید (دلیل واقعی همان‌جاست).",
+                    style = MaterialTheme.typography.bodySmall, color = TextLow,
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PrimaryButton(
+                        if (logBusy) "در حال خواندن…" else "خواندن لاگ",
+                        {
+                            scope.launch {
+                                logBusy = true
+                                val cmd = "for f in ~/.hermes/logs/errors.log ~/.hermes/logs/agent.log " +
+                                    "~/.hermes/logs/gateway.log; do echo \"=== \$f ===\"; tail -n 150 \"\$f\" 2>/dev/null; done"
+                                HermesRepo.shell(cmd)
+                                    .onSuccess {
+                                        val o = J.obj(it)
+                                        val out = J.str(o, "stdout")
+                                        val err = J.str(o, "stderr")
+                                        serverLog = (out + if (err.isNotBlank()) "\n--- stderr ---\n" + err else "").trim()
+                                    }
+                                    .onFailure { serverLog = it.message }
+                                logBusy = false
+                            }
+                        },
+                        Modifier.weight(1f),
+                        enabled = !logBusy,
+                        icon = Icons.Default.Terminal,
+                    )
+                    val logText = serverLog
+                    if (!logText.isNullOrBlank()) {
+                        GhostButton(
+                            "کپی",
+                            { clipboard.setText(AnnotatedString(logText)); msg = "لاگ سرور کپی شد" },
+                            Modifier.weight(1f),
+                            color = Cyan,
+                            icon = Icons.Default.ContentCopy,
+                        )
+                    }
+                }
+                serverLog?.let { log ->
+                    Spacer(Modifier.height(10.dp))
+                    Box(
+                        Modifier.fillMaxWidth()
+                            .heightIn(max = 260.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Ink0)
+                            .padding(10.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            log.ifBlank { "(لاگ خالی است — ممکن است فایلی موجود نباشد)" },
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = TextMid,
+                        )
+                    }
                 }
             }
 
