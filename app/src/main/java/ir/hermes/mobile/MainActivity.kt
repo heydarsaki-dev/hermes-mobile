@@ -4,10 +4,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -25,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
@@ -110,31 +109,44 @@ private fun Root() {
                     if (route == "hub") HubBar(route) { route = it }
                 },
             ) { pad ->
-                AnimatedContent(
-                    targetState = route,
-                    transitionSpec = { fadeIn() togetherWith fadeOut() },
-                    label = "nav",
-                ) { r ->
-                    Box(Modifier.fillMaxSize().padding(if (r == "hub") PaddingValues(bottom = pad.calculateBottomPadding()) else PaddingValues())) {
-                        when (r) {
-                            "hub" -> HubScreen(status, sid, "", onGo = { route = it })
-                            "chat" -> ChatScreen(
-                                engine = engine,
-                                title = "",
-                                statusLive = status == RpcEvent.State.CONNECTED,
-                                onNewSession = { scope.launch { HermesRepo.newSession("گفت‌وگوی جدید") } },
-                                onOpenSessions = { route = "sessions" },
-                                onOpenModel = { route = "model" },
-                            )
-                            "sessions" -> SessionsScreen({ route = "hub" }) { id -> HermesRepo.startSession(id); sid = id; route = "chat" }
-                            "model" -> ModelScreen { route = "hub" }
-                            "tools" -> ToolsScreenProxy { route = "hub" }
-                            "skills" -> SkillsScreen { route = "hub" }
-                            "cron" -> CronScreen { route = "hub" }
-                            "terminal" -> TerminalScreen { route = "hub" }
-                            "settings" -> SettingsScreen({ route = "hub" }) { route = ""; ready = false }
-                            else -> HubScreen(status, sid, "", onGo = { route = it })
-                        }
+                // پدینگ Scaffold همین‌جا (محتوای خودِ Scaffold) خوانده می‌شود؛ خواندن
+                // مقدار مشتق‌شده از اندازه‌گیری در یک زیرترکیب‌بندی تودرتو، Composer
+                // را در فاز draw خراب می‌کرد.
+                val bottomPad = pad.calculateBottomPadding()
+
+                // محو شدن ملایم بین مسیرها بدون AnimatedContent: آنتی‌میشن‌اسکپ‌ها
+                // محتوای مقصد را در فاز اندازه‌گیری می‌سازند و با Scaffold/LazyColumn
+                // تودرتو (هر دو SubcomposeLayout) باعث
+                // ArrayIndexOutOfBoundsException در Composer می‌شدند.
+                val fade = remember { Animatable(1f) }
+                LaunchedEffect(route) {
+                    fade.snapTo(0f)
+                    fade.animateTo(1f, animationSpec = tween(durationMillis = 180))
+                }
+
+                Box(
+                    Modifier.fillMaxSize()
+                        .padding(bottom = bottomPad)
+                        .graphicsLayer { alpha = fade.value },
+                ) {
+                    when (route) {
+                        "hub" -> HubScreen(status, sid, "", onGo = { route = it })
+                        "chat" -> ChatScreen(
+                            engine = engine,
+                            title = "",
+                            statusLive = status == RpcEvent.State.CONNECTED,
+                            onNewSession = { scope.launch { HermesRepo.newSession("گفت‌وگوی جدید") } },
+                            onOpenSessions = { route = "sessions" },
+                            onOpenModel = { route = "model" },
+                        )
+                        "sessions" -> SessionsScreen({ route = "hub" }) { id -> HermesRepo.startSession(id); sid = id; route = "chat" }
+                        "model" -> ModelScreen { route = "hub" }
+                        "tools" -> ToolsScreenProxy { route = "hub" }
+                        "skills" -> SkillsScreen { route = "hub" }
+                        "cron" -> CronScreen { route = "hub" }
+                        "terminal" -> TerminalScreen { route = "hub" }
+                        "settings" -> SettingsScreen({ route = "hub" }) { route = ""; ready = false }
+                        else -> HubScreen(status, sid, "", onGo = { route = it })
                     }
                 }
             }
