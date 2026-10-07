@@ -76,11 +76,10 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (id: String, title: String) -> 
         val id = J.str(s, "id", J.str(s, "session_id"))
         if (id.isBlank()) { error = "شناسهٔ نشست خالی است"; return }
         scope.launch {
-            // حذف نشست زنده در هرمس رد می‌شود؛ اول ببندش
-            if (id == HermesRepo.socket.sessionId) {
-                HermesRepo.closeSession(id)
-                HermesRepo.clearSession()
-            }
+            // هرمس نشستِ فعال را رد می‌کند؛ اول کامل رهاش می‌کنیم. این کار
+            // با مهلتِ کوتاه انجام می‌شود تا اگر سرور جواب نداد، حذف معطل
+            // نشستِ نامعتبرِ قبلی نشود.
+            if (id == HermesRepo.socket.sessionId) HermesRepo.releaseCurrentSession()
             HermesRepo.deleteSession(id).onFailure { error = it.message }
             load()
         }
@@ -119,8 +118,14 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (id: String, title: String) -> 
                 scope.launch {
                     error = null
                     val id = HermesRepo.createSession("گفت‌وگوی جدید")
-                    if (id == null) error = "ساخت نشست ناموفق بود — اتصال را بررسی کنید"
-                    load()
+                    if (id == null) {
+                        error = "ساخت نشست ناموفق بود — اتصال را بررسی کنید"
+                        load()
+                    } else {
+                        // مستقیماً وارد چتِ نشستِ جدید شو تا کاربر نتیجه را
+                        // ببیند؛ رفتن به فهرست و دوباره کلیک کردن اضافی است.
+                        onPicked(id, "گفت‌وگوی جدید")
+                    }
                 }
             }, Modifier.fillMaxWidth(), icon = Icons.Default.Add)
             Spacer(Modifier.height(12.dp))
@@ -143,6 +148,11 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (id: String, title: String) -> 
                                 scope.launch {
                                     // هرمس هنگام resume یک نشست زندهٔ تازه با شناسهٔ خودش
                                     // می‌سازد؛ باید همان شناسه برای گفت‌وگو استفاده شود.
+                                    // اگر روی نشستِ دیگری غیر از نشست فعالِ فعلی کلیک
+                                    // شده، نشستِ فعال رها می‌شود تا resume رد نشود.
+                                    if (id != HermesRepo.socket.sessionId) {
+                                        HermesRepo.releaseCurrentSession()
+                                    }
                                     val live = HermesRepo.resume(id)
                                     onPicked(live.ifBlank { id }, J.str(s, "title"))
                                 }

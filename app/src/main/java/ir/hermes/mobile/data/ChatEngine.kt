@@ -10,7 +10,23 @@ import java.util.concurrent.atomic.AtomicLong
 
 enum class MsgRole { USER, ASSISTANT, SYSTEM, TOOL }
 
-data class ToolRun(val name: String, var status: String, var detail: String = "")
+/**
+ * یک اجرای ابزار در پایینِ حبابِ دستیار.
+ *
+ * `detail` خلاصهٔ کوتاهِ سرور است و ممکن است خالی باشد؛ به همین دلیل
+ * `context` (چه کار می‌کند)، `args` (ورودی) و `result` (خروجی) را هم
+ * نگه می‌داریم تا بعد از اتمامِ ابزار هم ردیف قابل باز شدن بماند.
+ * قبلاً فقط `detail` بود و چون سرور غالباً خلاصه نمی‌فرستاد، ابزارِ
+ * تمام‌شده دیگر باز نمی‌شد.
+ */
+data class ToolRun(
+    val name: String,
+    var status: String,
+    var detail: String = "",
+    var context: String = "",
+    var args: String = "",
+    var result: String = "",
+)
 
 data class ChatMessage(
     val id: String,
@@ -77,8 +93,14 @@ class ChatEngine {
 
     private var assistantMsg: ChatMessage? = null
 
-    /** حبابِ مستقلِ ابزارِ در حال اجرا (خارج از حباب توضیح هرمس). */
-    private var toolMsg: ChatMessage? = null
+    /**
+     * حبابِ ابزارها همان حبابِ در حال ساختِ هرمس است.
+     *
+     * قبلاً هر ابزار یک حبابِ جداگانهٔ `MsgRole.TOOL` می‌گرفت، ولی کاربر
+     * می‌خواهد ابزارها — مثل متنِ بازاندیشی — ردیف‌هایی در همان حبابِ
+     * قبلی باشند و فقط با رسیدنِ «پیام جدید» (`message.start`/`message.interim`)
+     * حبابِ جدید ساخته شود.
+     */
 
     /**
      * اعلام تغییر یک پیام.
@@ -98,7 +120,6 @@ class ChatEngine {
         list[i] = fresh
         messages.value = list
         if (assistantMsg?.id == fresh.id) assistantMsg = fresh
-        if (toolMsg?.id == fresh.id) toolMsg = fresh
     }
 
     /**
@@ -170,12 +191,25 @@ class ChatEngine {
         streaming.value = ""
         notice.value = null
         assistantMsg = null
-        toolMsg = null
         if (sid.isBlank()) return
         HermesRepo.history(sid).onSuccess { r ->
-            val list = J.listOf(J.obj(r), "messages", "items")
+            val raw = J.listOf(J.obj(r), "messages", "items")
                 .mapNotNull { toMessage(J.obj(it)) }
-            messages.value = list
+            // ابزارها در حبابِ همان پیامِ دستیار قرار می‌گیرند تا مثلِ
+            // حالتِ زنده، هر پاسخ یک حبابِ واحد داشته باشد (نه اینکه هر
+            // ابزار یک حبابِ جداگانهٔ «ابزار» بگیرد).
+            val merged = ArrayList<ChatMessage>()
+            for (msg in raw) {
+                val last = merged.lastOrNull()
+                if (msg.role == MsgRole.TOOL && msg.tools.isNotEmpty() &&
+                    last != null && last.role == MsgRole.ASSISTANT
+                ) {
+                    last.tools.addAll(msg.tools)
+                    continue
+                }
+                merged += msg
+            }
+            messages.value = merged
         }
     }
 
@@ -192,7 +226,16 @@ class ChatEngine {
                 ),
             )
             "tool" -> ChatMessage(newId(), MsgRole.TOOL).also {
-                it.tools.add(ToolRun(J.str(o, "name", "ابزار"), "پایان", J.str(o, "context")))
+                it.tools.add(
+                    ToolRun(
+                        name = J.str(o, "name", "ابزار"),
+                        status = "پایان",
+                        detail = J.str(o, "summary"),
+                        context = J.str(o, "context"),
+                        args = J.str(o, "args"),
+                        result = J.str(o, "result"),
+                    ),
+                )
             }
             "system" -> ChatMessage(newId(), MsgRole.SYSTEM, text)
             else -> null
@@ -212,7 +255,6 @@ class ChatEngine {
         messages.value = messages.value + ChatMessage(newId(), MsgRole.USER, clean)
         notice.value = null
         assistantMsg = null
-        toolMsg = null
         state.value = TurnState.THINKING
         streaming.value = ""
 
@@ -266,7 +308,6 @@ class ChatEngine {
         m.error = msg
         messages.value = messages.value + m
         assistantMsg = null
-        toolMsg = null
     }
 
     /** پاک‌سازی برای شروع یک نشست جدید. */
@@ -276,7 +317,6 @@ class ChatEngine {
         streaming.value = ""
         notice.value = null
         assistantMsg = null
-        toolMsg = null
         _steps.value = emptyList()
     }
 
@@ -296,15 +336,15 @@ class ChatEngine {
                 state.value = TurnState.THINKING
                 _steps.value = emptyList()
                 assistantMsg = null
-                toolMsg = null
                 addStep("think", "آماده‌سازی نوبت")
                 streaming.value = ""
             }
             // هرمس برای هر پیام پاسخِ تازه یک message.start می‌فرستد؛ حباب قبلی
-            // بسته می‌شود تا هر پیام در حباب جداگانهٔ خودش بیاید.
+            // بسته می‌شود تا هر پیام در حباب جداگانهٔ خودش بیاید. این تنها
+            // جایی است که حباب جدید ساخته می‌شود — ابزارها در همان حبابِ
+            // قبلی می‌مانند (مثل متن بازاندیشی).
             "message.start" -> {
                 sealAssistant()
-                toolMsg = null
             }
             // متن میان‌نوبت (مثلاً توضیح قبل از اجرای ابزار): حباب فعلی بسته
             // می‌شود تا به پاسخ بعدی نچسبد.
@@ -354,10 +394,10 @@ class ChatEngine {
                 }
             }
             // مدل شروع به ساختن آرگومان‌های ابزار کرده است (مثلاً بدنهٔ یک
-            // write_file بزرگ). همین‌جا حباب توضیح بسته می‌شود تا در طول ساخت
-            // دستور هم متن‌ها به‌هم نچسبند — نه فقط در لحظهٔ tool.start.
+            // write_file بزرگ). حباب فعلی بسته نمی‌شود — ابزارها مثل متن
+            // بازاندیشی در همان حبابِ در حال ساخت می‌مانند و فقط با رسیدن
+            // «پیام جدید» (message.start) حباب جدید ساخته می‌شود.
             "tool.generating" -> {
-                sealAssistant()
                 val name = J.str(p, "name")
                 val title = "آماده‌سازی: " + name
                 if (name.isNotBlank() &&
@@ -368,14 +408,20 @@ class ChatEngine {
                 val toolName = J.str(p, "name", J.str(p, "tool", "ابزار"))
                 val toolId = J.str(p, "tool_id")
                 val ctx = J.str(p, "context", J.str(p, "detail"))
-                // توضیح هرمس قبل از اجرای ابزار در حباب خودش بسته می‌شود و خودِ
-                // ابزار حباب جداگانه می‌گیرد؛ این‌طور در حین اجرا پاسخ‌ها به‌هم
-                // نمی‌چسبند و هر بخش جدا دیده می‌شود.
-                sealAssistant()
-                val m = ChatMessage(newId(), MsgRole.TOOL)
-                m.tools.add(ToolRun(toolName, "در حال اجرا", ctx))
-                messages.value = messages.value + m
-                toolMsg = m
+                // ابزار در همان حبابِ در حال ساختِ هرمس اضافه می‌شود — حبابِ
+                // جداگانه‌ای برای آن ساخته نمی‌شود. اگر هنوز حبابی نیست (یعنی
+                // نه متنی آمده و نه بازاندیشی)، یکی ساخته می‌شود.
+                val m = assistantMsg ?: ChatMessage(newId(), MsgRole.ASSISTANT, pending = true)
+                    .also { assistantMsg = it; messages.value = messages.value + it }
+                m.tools.add(
+                    ToolRun(
+                        name = toolName,
+                        status = "در حال اجرا",
+                        context = ctx,
+                        args = clamp(J.str(p, "args_text")),
+                    ),
+                )
+                touch(m)
                 state.value = TurnState.TOOL
                 // مرحلهٔ ابزار با جزئیات کامل نگه داشته می‌شود تا کاربر با کلیک
                 // روی آن ببیند هرمس دقیقاً چه دستوری اجرا می‌کند یا چه فایلی
@@ -390,11 +436,24 @@ class ChatEngine {
                 val name = J.str(p, "name", J.str(p, "tool"))
                 val toolId = J.str(p, "tool_id")
                 val summary = J.str(p, "summary")
-                val m = toolMsg
-                m?.tools?.lastOrNull { it.name == name }?.let { it.status = "پایان"; it.detail = summary }
-                    ?: m?.tools?.lastOrNull()?.let { it.status = "پایان"; it.detail = summary }
-                touch(m)
-                toolMsg = null
+                val ctx0 = J.str(p, "context")
+                val rt = J.str(p, "result_text")
+                val out = if (rt.isNotBlank()) rt
+                else p["result"]?.let { if (it is JsonPrimitive) it.content else J.pretty(it) } ?: ""
+                val args0 = p["args"]?.let { clamp(J.pretty(it)) } ?: ""
+                // پیدا کردن ابزارِ در حال اجرا در حبابِ فعلی (یا آخرین حباب).
+                // تا وقتی متن جدید نیامده، ابزارها در همان حبابِ قبلی می‌مانند.
+                val owner = assistantMsg ?: messages.value.lastOrNull { it.tools.isNotEmpty() }
+                val run = owner?.tools?.lastOrNull { it.name == name && it.status != "پایان" }
+                    ?: owner?.tools?.lastOrNull { it.status != "پایان" }
+                run?.let {
+                    it.status = "پایان"
+                    if (summary.isNotBlank()) it.detail = summary
+                    if (it.context.isBlank()) it.context = ctx0
+                    if (it.args.isBlank()) it.args = args0
+                    if (out.isNotBlank()) it.result = clamp(out)
+                }
+                touch(owner)
                 // مرحلهٔ متناظر (اول با tool_id، وگرنه آخرین ابزار در حال اجرا)
                 val s = _steps.value.lastOrNull { it.kind == "tool" && it.toolId.isNotBlank() && it.toolId == toolId }
                     ?: _steps.value.lastOrNull { it.kind == "tool" && it.status == StepStatus.RUNNING }
@@ -402,21 +461,19 @@ class ChatEngine {
                     st.status = StepStatus.DONE
                     if (summary.isNotBlank()) st.detail = summary
                     st.durationMs = (J.num(p, "duration_s") * 1000).toLong()
-                    p["args"]?.let { st.args = clamp(J.pretty(it)) }
-                    val rt = J.str(p, "result_text")
-                    val out = if (rt.isNotBlank()) rt
-                    else p["result"]?.let { if (it is JsonPrimitive) it.content else J.pretty(it) } ?: ""
+                    if (st.args.isBlank()) st.args = args0
                     if (out.isNotBlank()) st.result = clamp(out)
-                    if (st.context.isBlank()) st.context = J.str(p, "context")
+                    if (st.context.isBlank()) st.context = ctx0
                     touchStep(st)
                 }
             }
             "tool.output_risk" -> {
-                toolMsg?.tools?.lastOrNull()?.let {
+                val owner = assistantMsg ?: messages.value.lastOrNull { it.tools.isNotEmpty() }
+                owner?.tools?.lastOrNull()?.let {
                     it.status = "نیازمند تأیید"; it.detail = J.str(p, "reason")
                 }
                 state.value = TurnState.WAITING_APPROVAL
-                touch(toolMsg)
+                touch(owner)
                 addStep("approve", "نیازمند تأیید", J.str(p, "reason"), StepStatus.RUNNING)
             }
             "approval.request" -> {
@@ -446,7 +503,6 @@ class ChatEngine {
                 state.value = TurnState.DONE
                 streaming.value = ""
                 assistantMsg = null
-                toolMsg = null
             }
             "turn.error", "error" -> {
                 val msg = J.str(p, "message", J.str(p, "error", "خطای نامشخص"))
@@ -475,7 +531,6 @@ class ChatEngine {
                 state.value = TurnState.ERROR
                 streaming.value = ""
                 assistantMsg = null
-                toolMsg = null
             }
             "model.changed" -> { model.value = J.str(p, "model"); notice.value = "مدل تغییر کرد" }
             else -> Unit

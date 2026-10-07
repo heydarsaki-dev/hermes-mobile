@@ -23,6 +23,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -65,8 +66,20 @@ fun ChatScreen(
     val busy = st == TurnState.THINKING || st == TurnState.STREAMING ||
         st == TurnState.TOOL || st == TurnState.WAITING_APPROVAL
 
-    LaunchedEffect(msgs.size, msgs.lastOrNull()?.text?.length, msgs.lastOrNull()?.reasoning?.length) {
-        if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1)
+    // آیا کاربر در پایینِ لیست است؟ اسکرولِ خودکارِ تهاجمی حذف شد؛ به‌جای آن
+    // یک دکمهٔ شناورِ «آخرین پیام» در پایینِ صفحه نشان داده می‌شود که فقط
+    // وقتی کاربر بالاتر از تهِ لیست است ظاهر می‌شود.
+    val atBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            when {
+                last == null -> true
+                last.index < msgs.size - 1 -> false
+                // آخرین مورد کاملاً در دید است (در حالت خالی هم سایز صفر است)
+                else -> (last.offset + last.size) <= info.viewportEndOffset
+            }
+        }
     }
 
     // اگر نوبتی بیش از حد طول بکشد، اپ نباید بی‌صدا در «در حال فکر کردن» بماند.
@@ -197,19 +210,38 @@ fun ChatScreen(
             }
         },
     ) { pad ->
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize().padding(pad),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            if (msgs.isEmpty()) {
-                item { WelcomeCard(onSuggestion = { input = it }) }
+        Box(Modifier.fillMaxSize().padding(pad)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (msgs.isEmpty()) {
+                    item { WelcomeCard(onSuggestion = { input = it }) }
+                }
+                items(msgs, key = { it.id }) { MessageCard(it) }
+                // در حال کار است ولی هنوز هیچ خروجی‌ای نیامده: فقط نقاط متحرک.
+                // ابزارهای در حال اجرا خودشان ردیفِ «در حال اجرا» با اسپینر
+                // می‌سازند، پس در آن حالت نقاط اضافی نشان داده نمی‌شود.
+                if (busy && msgs.none {
+                        it.role == MsgRole.ASSISTANT && (it.text.isNotBlank() || it.reasoning.isNotBlank() || it.tools.isNotEmpty())
+                    }) {
+                    item("dots") { ThinkingDots() }
+                }
             }
-            items(msgs, key = { it.id }) { MessageCard(it) }
-            // در حال کار است ولی هنوز هیچ خروجی‌ای نیامده: فقط نقاط متحرک
-            if (busy && msgs.none { it.role == MsgRole.ASSISTANT && (it.text.isNotBlank() || it.reasoning.isNotBlank()) }) {
-                item("dots") { ThinkingDots() }
+            // دکمهٔ شناورِ «آخرین پیام»: فقط وقتی کاربر در پایینِ لیست نیست
+            // ظاهر می‌شود. اسکرولِ خودکار حذف شد چون حین خواندن پیام‌های قدیمی
+            // آزاردهنده بود.
+            AnimatedVisibility(
+                visible = !atBottom && msgs.isNotEmpty(),
+                enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.scaleIn(),
+                exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.scaleOut(),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
+            ) {
+                ScrollToBottomButton(onClick = {
+                    scope.launch { listState.animateScrollToItem(msgs.size - 1) }
+                })
             }
         }
     }
@@ -403,9 +435,57 @@ private fun ThinkingDots() {
     }
 }
 
+/**
+ * دکمهٔ شناورِ «آخرین پیام» در پایینِ مرکزِ صفحه.
+ *
+ * اسکرولِ خودکار حذف شد چون حین خواندن پیام‌های قدیمی آزاردهنده بود؛ به‌جای
+ * آن این دکمه فقط وقتی کاربر بالاتر از تهِ لیست است ظاهر می‌شود.
+ *
+ * دیزاین: پیلِ شیشه‌ایِ نیمه‌شفاف با هالهٔ نرم، آیکون فلشِ ریزِ رو به پایین
+ * و متن «آخرین پیام».
+ */
+@Composable
+private fun ScrollToBottomButton(onClick: () -> Unit) {
+    Row(
+        Modifier
+            .shadow(
+                elevation = 10.dp,
+                shape = RoundedCornerShape(50),
+                ambientColor = Color.Black.copy(alpha = 0.45f),
+                spotColor = Color.Black.copy(alpha = 0.5f),
+            )
+            .clip(RoundedCornerShape(50))
+            .background(Night2.copy(alpha = 0.92f))
+            .border(1.dp, Night4.copy(alpha = 0.9f), RoundedCornerShape(50))
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Default.KeyboardArrowDown,
+            "رفتن به آخرین پیام",
+            Modifier.size(16.dp),
+            tint = Accent,
+        )
+        Spacer(Modifier.width(7.dp))
+        Text(
+            "آخرین پیام",
+            style = MaterialTheme.typography.labelLarge,
+            color = TextHi,
+        )
+    }
+}
+
 @Composable
 private fun MessageCard(m: ir.hermes.mobile.data.ChatMessage) {
     val isUser = m.role == MsgRole.USER
+    // پیام‌های کاملاً خالی (بدون متن، بازاندیشی، ابزار و خطا) اصلاً رندر
+    // نمی‌شوند؛ وگرنه یک حبابِ خالیِ روشن با فضای اضافی دیده می‌شد — همین
+    // چیزی است که به‌شکل «فضای خالیِ بالای بابل» خودنمایی می‌کرد.
+    if (m.text.isBlank() && m.reasoning.isBlank() &&
+        m.tools.isEmpty() && m.error == null
+    ) return
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
         Row(
             Modifier
@@ -450,7 +530,6 @@ private fun MessageCard(m: ir.hermes.mobile.data.ChatMessage) {
         Text(
             when (m.role) {
                 MsgRole.USER -> "شما"
-                MsgRole.TOOL -> "ابزار"
                 else -> "هرمس"
             },
             style = MaterialTheme.typography.labelSmall,
@@ -465,11 +544,16 @@ private fun MessageCard(m: ir.hermes.mobile.data.ChatMessage) {
  *
  * همهٔ این‌ها به‌صورت ردیف‌های کوچک و یکدست نشان داده می‌شوند (نه کادر بزرگ
  * مراحل اجرا): یک آیکون کوچک، یک خط خلاصه، و با کلیک، متن کامل با فونت ریز.
+ *
+ * نکته: ردیفِ ابزار بعد از اتمام هم باید قابل باز شدن بماند. سرور غالباً
+ * خلاصهٔ کوتاه نمی‌فرستد، پس متنِ قابلِ نمایش از چند بخش ساخته می‌شود:
+ * خلاصه (در صورت بودن)، توضیحِ کارِ ابزار، ورودی (args) و خروجی (result).
  */
 private data class ActivityItem(
     val icon: ImageVector,
     val tint: Color,
     val title: String,
+    val subtitle: String,
     val status: String,
     val detail: String,
 )
@@ -507,6 +591,7 @@ private fun activityItems(m: ir.hermes.mobile.data.ChatMessage): List<ActivityIt
             icon = Icons.Default.Psychology,
             tint = Violet,
             title = "بازاندیشی",
+            subtitle = "",
             status = if (thinking) "در حال اجرا" else "پایان",
             detail = m.reasoning,
         )
@@ -520,12 +605,40 @@ private fun activityItems(m: ir.hermes.mobile.data.ChatMessage): List<ActivityIt
                 else -> Cyan
             },
             title = t.name,
+            subtitle = t.context,
             status = t.status,
-            detail = t.detail,
+            detail = toolDetailText(t),
         )
     }
     return out
 }
+
+/**
+ * متنِ کاملِ قابلِ نمایشِ یک ابزار.
+ *
+ * اگر فقط به `detail` (خلاصهٔ کوتاهِ سرور) اتکا می‌کردیم، ابزار بعد از اتمام
+ * دیگر قابل باز شدن نبود — سرور غالباً خلاصه نمی‌فرستد. اینجا از توضیحِ کار،
+ * ورودی و خروجیِ ابزار هم استفاده می‌شود تا همیشه چیزی برای دیدن باشد.
+ */
+private fun toolDetailText(t: ir.hermes.mobile.data.ToolRun): String = buildString {
+    if (t.detail.isNotBlank()) {
+        append(t.detail)
+        append("\n\n")
+    }
+    if (t.context.isNotBlank() && t.context != t.detail) {
+        append(t.context)
+        append("\n\n")
+    }
+    if (t.args.isNotBlank()) {
+        append("ورودی:\n")
+        append(t.args)
+        append("\n\n")
+    }
+    if (t.result.isNotBlank()) {
+        append("خروجی:\n")
+        append(t.result)
+    }
+}.trimEnd()
 
 @Composable
 private fun ActivityRow(a: ActivityItem) {
@@ -541,13 +654,22 @@ private fun ActivityRow(a: ActivityItem) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(a.icon, null, Modifier.size(13.dp), tint = a.tint)
             Spacer(Modifier.width(6.dp))
-            Text(
-                a.title,
-                style = MaterialTheme.typography.labelSmall,
-                color = TextHi,
-                maxLines = 1,
-                modifier = Modifier.weight(1f),
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    a.title,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextHi,
+                    maxLines = 1,
+                )
+                if (a.subtitle.isNotBlank()) {
+                    Text(
+                        a.subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextLow,
+                        maxLines = 1,
+                    )
+                }
+            }
             if (a.status == "در حال اجرا") {
                 CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp, color = a.tint)
             } else {

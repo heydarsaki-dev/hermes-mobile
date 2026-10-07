@@ -35,6 +35,13 @@ object HermesRepo {
     /** مهلت بلند برای فراخوانی‌هایی که سرور برایشان ایجنت می‌سازد یا دیتابیس می‌خواند */
     private const val RPC_SLOW = 120_000L
 
+    /**
+     * مهلتِ بستن نشست. `session.close` ممکن است هیچ پاسخی ندهد؛ اگر از
+     * [RPC_SLOW] استفاده کنیم، حذف یا ساختِ نشست جدید تا ۱۲۰ ثانیه معطل
+     * می‌شود و کاربر فکر می‌کند دکمه کار نمی‌کند.
+     */
+    private const val RPC_CLOSE = 8_000L
+
     private const val CACHE_SESSIONS = "sessions"
     private const val CACHE_MODEL_OPTIONS = "model_options"
     private const val CACHE_ENDPOINTS = "endpoints"
@@ -117,6 +124,9 @@ object HermesRepo {
         provider: String = "",
         model: String = "",
     ): String? {
+        // هرمس در هر لحظه یک نشست فعال نگه می‌دارد و ساختِ نشستِ جدید تا
+        // وقتی نشست قبلی «فعال» است رد می‌شود. اول آن را رها می‌کنیم.
+        releaseCurrentSession()
         val sel = selection()
         val p = provider.ifBlank { sel.provider }
         val m = model.ifBlank { sel.model }
@@ -169,20 +179,36 @@ object HermesRepo {
         } else null
         // ۳) ثبت انتخاب کاربر — حتی اگر REST خطا داد، انتخاب کاربر معتبر است
         settings.saveSelection(ModelSelection(provider, model, baseUrl))
-        // ۴) نشست فعلی کنار گذاشته می‌شود
-        clearSession()
+        // ۴) نشست فعلی کامل رها می‌شود (هم محلی، هم سمت سرور) تا نشست بعدی
+        //    با مدل تازه ساخته شود.
+        releaseCurrentSession()
         return err
     }
 
     /** بستن نشست سمت سرور (حذف نشستِ فعال در هرمس رد می‌شود). */
     suspend fun closeSession(id: String): Result<JsonElement> =
-        rpc("session.close", str("session_id", id), timeoutMs = RPC_SLOW)
+        rpc("session.close", str("session_id", id), timeoutMs = RPC_CLOSE)
 
     /**
      * پاک‌کردن نشست فعال. نشست بعدی با تنظیمات/مدل جاری ساخته می‌شود؛
      * لازم است چون هرمس مدل هر نشست را در زمان ساخت آن ثابت می‌کند.
      */
     fun clearSession() { socket.sessionId = "" }
+
+    /**
+     * رها کردنِ کامل نشست فعالِ کنونی.
+     *
+     * هرمس در هر لحظه فقط یک نشست را «فعال» نگه می‌دارد. تا وقتی این نشست
+     * بسته نشود، `session.create` و `session.delete` برای همان نشست رد
+     * می‌شوند — همین باعث می‌شد «نشست جدید» و «حذف بالاترین نشست» کار
+     * نکنند. درخواست بستن با مهلتِ کوتاه فرستاده می‌شود (رد شدنش مشکلی
+     * ندارد؛ مهم این است که دیگر نشست فعلی محلیِ نامعتبر در دست نباشد).
+     */
+    suspend fun releaseCurrentSession() {
+        val id = socket.sessionId
+        clearSession()
+        if (id.isNotBlank()) runCatching { closeSession(id) }
+    }
 
     /**
      * بازگرداندن یک نشست ذخیره‌شده.
