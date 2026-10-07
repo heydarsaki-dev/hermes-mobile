@@ -184,7 +184,24 @@ object HermesRepo {
      */
     fun clearSession() { socket.sessionId = "" }
 
-    suspend fun resume(id: String): Result<JsonElement> = rpc("session.resume", str("session_id", id))
+    /**
+     * بازگرداندن یک نشست ذخیره‌شده.
+     *
+     * هرمس هنگام `session.resume` یک نشست *زندهٔ* تازه با شناسهٔ خودش می‌سازد
+     * (`_live_session_payload`) که می‌تواند با شناسهٔ ذخیره‌شده‌ای که فرستادیم
+     * متفاوت باشد. اگر همان شناسهٔ قدیمی را نگه داریم، `prompt.submit` با خطای
+     * «session not found» رد می‌شود — همان چیزی که با خروج از نشست و برگشت
+     * رخ می‌داد.
+     *
+     * @return شناسهٔ زندهٔ نشست که باید برای گفت‌وگو استفاده شود.
+     */
+    suspend fun resume(id: String): String {
+        val live = rpc("session.resume", str("session_id", id), timeoutMs = RPC_SLOW)
+            .getOrNull()?.let { J.str(J.obj(it), "session_id") } ?: ""
+        val use = live.ifBlank { id }
+        if (use.isNotBlank()) startSession(use)
+        return use
+    }
 
     suspend fun deleteSession(id: String): Result<JsonElement> = rpc("session.delete", str("session_id", id))
 

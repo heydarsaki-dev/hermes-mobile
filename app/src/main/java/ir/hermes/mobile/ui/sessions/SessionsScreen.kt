@@ -136,7 +136,14 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (String) -> Unit) {
                         SessionRow(
                             s = s,
                             isActive = id == activeSid,
-                            onOpen = { scope.launch { HermesRepo.resume(id); onPicked(id) } },
+                            onOpen = {
+                                scope.launch {
+                                    // هرمس هنگام resume یک نشست زندهٔ تازه با شناسهٔ خودش
+                                    // می‌سازد؛ باید همان شناسه برای گفت‌وگو استفاده شود.
+                                    val live = HermesRepo.resume(id)
+                                    onPicked(live.ifBlank { id })
+                                }
+                            },
                             onRename = { renaming = s },
                             onDelete = { deleteSession(s) },
                         )
