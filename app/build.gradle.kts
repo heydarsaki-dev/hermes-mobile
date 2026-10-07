@@ -16,8 +16,8 @@ android {
         // داده خودشان را ندارند (محدودیت SELinux). runtime تعبیهشدهٔ هرمس
         // (proot + rootfs) برای اجرا به این مجوز نیاز دارد.
         targetSdk = 28
-        versionCode = 11
-        versionName = "1.3.7"
+        versionCode = 12
+        versionName = "1.3.8"
         vectorDrawables { useSupportLibrary = true }
     }
 
