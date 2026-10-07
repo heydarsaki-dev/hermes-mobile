@@ -38,8 +38,10 @@ import kotlinx.serialization.json.JsonObject
  *    قبلاً هر بار باید منتظر پاسخ کندِ هرمس می‌ماندیم.
  *  - «نشست جدید» با مدل/پرووایدری که کاربر انتخاب کرده ساخته می‌شود
  *    (override همان نشست)، پس مدل انتخابی واقعاً روی نشست ست می‌شود.
- *  - حذف بدون دیالوگ تأیید انجام می‌شود. اگر نشست همان نشست فعال باشد، اول
+ *  - حذف با دیالوگ تأیید انجام می‌شود. اگر نشست همان نشست فعال باشد، اول
  *    بسته می‌شود چون هرمس حذف نشست زنده را رد می‌کند (cannot delete an active session).
+ *  - حذف آخرین نشستِ باقی‌مانده هم مجاز است؛ فهرست خالی می‌شود و کاربر می‌تواند
+ *    نشست جدید بسازد (یا در صفحهٔ چت به‌صورت خودکار یکی ساخته می‌شود).
  */
 @Composable
 fun SessionsScreen(onBack: () -> Unit, onPicked: (id: String, title: String) -> Unit) {
@@ -48,6 +50,7 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (id: String, title: String) -> 
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<JsonObject?>(null) }
+    var pendingDelete by remember { mutableStateOf<JsonObject?>(null) }
     var activeSid by remember { mutableStateOf(HermesRepo.socket.sessionId) }
     val selection by HermesRepo.settings.selection.collectAsState(initial = ModelSelection())
 
@@ -145,7 +148,7 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (id: String, title: String) -> 
                                 }
                             },
                             onRename = { renaming = s },
-                            onDelete = { deleteSession(s) },
+                            onDelete = { pendingDelete = s },
                         )
                     }
                     item { Spacer(Modifier.height(16.dp)) }
@@ -170,6 +173,27 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (id: String, title: String) -> 
                 }) { Text("ذخیره") }
             },
             dismissButton = { TextButton(onClick = { renaming = null }) { Text("انصراف") } },
+        )
+    }
+
+    pendingDelete?.let { s ->
+        val title = J.str(s, "title").ifBlank { J.str(s, "preview").ifBlank { "بدون عنوان" } }
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("حذف نشست") },
+            text = {
+                Text(
+                    "آیا از حذف نشست «$title» مطمئن هستید؟\n" +
+                        "تمام پیام‌های این نشست برای همیشه پاک می‌شوند.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDelete = null
+                    deleteSession(s)
+                }) { Text("حذف", color = Rose) }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("انصراف") } },
         )
     }
 }

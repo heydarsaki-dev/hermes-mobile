@@ -384,7 +384,7 @@ private fun CustomEndpointCard(
                 if (!isCurrent) {
                     PrimaryButton("اتصال به هرمس", onActivate, Modifier.weight(1f), icon = Icons.Default.Link)
                 } else {
-                    GhostButton("وصل‌شده", onActivate, Modifier.weight(1f), color = Lime, icon = Icons.Default.Check)
+                    GhostButton("متصل", onActivate, Modifier.weight(1f), color = Lime, icon = Icons.Default.Check)
                 }
             }
             Spacer(Modifier.height(8.dp))

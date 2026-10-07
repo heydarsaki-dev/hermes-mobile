@@ -73,7 +73,7 @@ fun ToolsScreen(onBack: () -> Unit) {
 
             SectionTitle("ابزارهای در دسترس")
             if (tools.isEmpty()) {
-                EmptyState("ابزاری برگردانده نشد", Icons.Default.Build)
+                EmptyState("ابزاری یافت نشد", Icons.Default.Build)
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     itemsIndexed(

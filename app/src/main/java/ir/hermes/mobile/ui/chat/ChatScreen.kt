@@ -24,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -32,13 +33,10 @@ import ir.hermes.mobile.data.ChatEngine
 import ir.hermes.mobile.data.HermesRepo
 import ir.hermes.mobile.data.J
 import ir.hermes.mobile.data.MsgRole
-import ir.hermes.mobile.data.StepStatus
 import ir.hermes.mobile.data.TurnState
-import ir.hermes.mobile.data.TurnStep
 import ir.hermes.mobile.ui.components.*
 import ir.hermes.mobile.ui.theme.*
 import kotlinx.coroutines.launch
-import java.util.Locale
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -59,7 +57,6 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
     val msgs by engine.messages.collectAsState()
-    val steps by engine.steps.collectAsState()
     val st by engine.state.collectAsState()
     val notice by engine.notice.collectAsState()
     // «فعال» یعنی هرمس مشغول است. قبلاً فقط THINKING نشانگر داشت، پس وقتی هدر
@@ -68,12 +65,8 @@ fun ChatScreen(
     val busy = st == TurnState.THINKING || st == TurnState.STREAMING ||
         st == TurnState.TOOL || st == TurnState.WAITING_APPROVAL
 
-    LaunchedEffect(msgs.size, msgs.lastOrNull()?.text?.length, steps.size, steps.lastOrNull()?.rev) {
-        if (msgs.isNotEmpty()) {
-            // آخرین آیتم پنل مراحل است، پس در حال اجرا یکی بعد از پیام‌ها می‌رویم
-            val last = if (busy || steps.isNotEmpty()) msgs.size else msgs.size - 1
-            listState.animateScrollToItem(last.coerceAtLeast(0))
-        }
+    LaunchedEffect(msgs.size, msgs.lastOrNull()?.text?.length, msgs.lastOrNull()?.reasoning?.length) {
+        if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1)
     }
 
     // اگر نوبتی بیش از حد طول بکشد، اپ نباید بی‌صدا در «در حال فکر کردن» بماند.
@@ -214,9 +207,10 @@ fun ChatScreen(
                 item { WelcomeCard(onSuggestion = { input = it }) }
             }
             items(msgs, key = { it.id }) { MessageCard(it) }
-            // اگر مرحله‌ای ثبت نشده بود، حداقل نشانگر متحرک را نشان بده
-            if (busy && steps.isEmpty()) item("dots") { ThinkingDots() }
-            if (steps.isNotEmpty()) item("steps") { ActivityPanel(steps, busy) }
+            // در حال کار است ولی هنوز هیچ خروجی‌ای نیامده: فقط نقاط متحرک
+            if (busy && msgs.none { it.role == MsgRole.ASSISTANT && (it.text.isNotBlank() || it.reasoning.isNotBlank()) }) {
+                item("dots") { ThinkingDots() }
+            }
         }
     }
 
@@ -305,7 +299,7 @@ private fun ModelPickerDialog(
         text = {
             Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
                 Text(
-                    "با انتخاب مدل، نوبت جاری متوقف می‌شود و نشست تازه‌ای با همان مدل ساخته می‌شود (هرمز مدل هر نشست را هنگام ساخت ثابت می‌کند).",
+                    "با انتخاب مدل، نوبت جاری متوقف می‌شود و نشست تازه‌ای با همان مدل ساخته می‌شود (هرمس مدل هر نشست را هنگام ساخت ثابت می‌کند).",
                     style = MaterialTheme.typography.bodySmall, color = TextLow,
                 )
                 Spacer(Modifier.height(10.dp))
@@ -385,136 +379,6 @@ private fun WelcomeCard(onSuggestion: (String) -> Unit) {
     }
 }
 
-/**
- * نمایش زندهٔ مرحله‌به‌مرحلهٔ کار هرمس: آماده‌سازی، فکر کردن، هر ابزار،
- * انتظار تأیید، نوشتن پاسخ و پایان/خطا.
- */
-@Composable
-private fun ActivityPanel(steps: List<TurnStep>, busy: Boolean) {
-    var openStep by remember { mutableStateOf<TurnStep?>(null) }
-    GlassCard(
-        Modifier.fillMaxWidth(),
-        borderColor = Accent.copy(alpha = if (busy) 0.45f else 0.18f),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (busy) {
-                CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 2.dp, color = Accent)
-            } else {
-                Icon(Icons.Default.CheckCircle, null, Modifier.size(14.dp), tint = Lime)
-            }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                if (busy) "هرمس در حال کار است…" else "مراحل اجرای نوبت اخیر",
-                style = MaterialTheme.typography.labelLarge,
-                color = if (busy) Accent else TextMid,
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        steps.forEach { s -> StepRow(s) { openStep = s } }
-    }
-    openStep?.let { s -> StepDetailDialog(s) { openStep = null } }
-}
-
-@Composable
-private fun StepRow(s: TurnStep, onOpen: () -> Unit) {
-    val c = when (s.status) {
-        StepStatus.RUNNING -> Accent
-        StepStatus.DONE -> Lime
-        StepStatus.FAILED -> Rose
-    }
-    Row(
-        Modifier.fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .then(if (s.openable) Modifier.clickable { onOpen() } else Modifier)
-            .padding(vertical = 3.dp),
-        verticalAlignment = Alignment.Top,
-    ) {
-        when (s.status) {
-            StepStatus.RUNNING ->
-                CircularProgressIndicator(Modifier.padding(top = 3.dp).size(11.dp), strokeWidth = 2.dp, color = c)
-            StepStatus.DONE -> Icon(Icons.Default.Check, null, Modifier.size(13.dp), tint = c)
-            StepStatus.FAILED -> Icon(Icons.Default.Close, null, Modifier.size(13.dp), tint = c)
-        }
-        Spacer(Modifier.width(8.dp))
-        Column(Modifier.weight(1f)) {
-            Text(s.title, style = MaterialTheme.typography.bodySmall, color = TextHi, maxLines = 2)
-            if (s.detail.isNotBlank()) {
-                Text(s.detail, style = MaterialTheme.typography.labelSmall, color = TextLow, maxLines = 3)
-            }
-        }
-        // نشانهٔ «قابل بازکردن»: کاربر می‌تواند روی مرحله بزند و جزئیات را ببیند.
-        if (s.openable) {
-            Spacer(Modifier.width(6.dp))
-            Text("جزئیات", style = MaterialTheme.typography.labelSmall, color = Accent, maxLines = 1)
-            Icon(Icons.Default.ChevronLeft, null, Modifier.size(14.dp), tint = Accent)
-        }
-    }
-}
-
-/** نمایش جزئیات کامل یک مرحله (اجرای دستور/خواندن فایل و…) با کلیک روی آن. */
-@Composable
-private fun StepDetailDialog(s: TurnStep, onDismiss: () -> Unit) {
-    val statusText = when (s.status) {
-        StepStatus.RUNNING -> "در حال اجرا"
-        StepStatus.DONE -> "پایان‌یافته"
-        StepStatus.FAILED -> "ناموفق"
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(s.title) },
-        text = {
-            Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
-                SelectionContainer {
-                    Column {
-                        StepDetailLine("وضعیت", statusText)
-                        if (s.durationMs > 0) StepDetailLine("مدت", formatDuration(s.durationMs))
-                        if (s.context.isNotBlank()) StepDetailBlock("توضیح", s.context)
-                        if (s.args.isNotBlank()) StepDetailBlock("ورودی / دستور", s.args)
-                        if (s.result.isNotBlank()) StepDetailBlock("خروجی / نتیجه", s.result)
-                        if (s.args.isBlank() && s.result.isBlank() && s.context.isBlank()) {
-                            StepDetailBlock("جزئیات", s.detail.ifBlank { "جزئیات بیشتری ثبت نشده است." })
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("بستن") } },
-    )
-}
-
-@Composable
-private fun StepDetailLine(label: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = TextMid)
-        Spacer(Modifier.width(8.dp))
-        Text(value, style = MaterialTheme.typography.bodySmall, color = TextHi)
-    }
-}
-
-@Composable
-private fun StepDetailBlock(label: String, body: String) {
-    Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = Mint)
-        Spacer(Modifier.height(4.dp))
-        Box(
-            Modifier.fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .background(Ink2.copy(alpha = 0.7f))
-                .padding(10.dp)
-        ) {
-            Text(
-                body,
-                style = MaterialTheme.typography.bodySmall,
-                color = TextMid,
-            )
-        }
-    }
-}
-
-private fun formatDuration(ms: Long): String {
-    val secs = ms / 1000.0
-    return if (secs < 1) "$ms میلی‌ثانیه" else "${String.format(Locale.US, "%.1f", secs)} ثانیه"
-}
 
 @Composable
 private fun ThinkingDots() {
@@ -565,20 +429,20 @@ private fun MessageCard(m: ir.hermes.mobile.data.ChatMessage) {
         ) {
             SelectionContainer {
                 Column {
-                    if (m.reasoning.isNotBlank()) {
-                        ReasoningBlock(m.reasoning)
-                        Spacer(Modifier.height(8.dp))
-                    }
                     if (m.text.isNotBlank()) {
                         Text(m.text, style = MaterialTheme.typography.bodyMedium)
-                    } else if (m.pending) {
+                    } else if (m.pending && m.reasoning.isBlank() && m.tools.isEmpty()) {
                         Text("…", color = TextMid)
                     }
-                    m.tools.forEach { ToolChip(it.name, it.status, it.detail) }
                     m.error?.let {
-                        Spacer(Modifier.height(6.dp))
+                        if (m.text.isNotBlank()) Spacer(Modifier.height(6.dp))
                         Text(it, color = Rose, style = MaterialTheme.typography.bodySmall)
                     }
+                    // فعالیت‌های این پیام در پایین آن فهرست می‌شوند: بازاندیشی و
+                    // سپس هر ابزار یا دستوری که صدا زده شده. ردیف‌ها کوچک و هم‌شکل
+                    // هستند، هر کدام آیکون خودش را دارد و با کلیک، متن کاملش با
+                    // فونت ریز باز می‌شود.
+                    activityItems(m).forEach { ActivityRow(it) }
                 }
             }
         }
@@ -596,50 +460,114 @@ private fun MessageCard(m: ir.hermes.mobile.data.ChatMessage) {
     }
 }
 
-@Composable
-private fun ReasoningBlock(text: String) {
-    var open by remember { mutableStateOf(false) }
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-            .background(Violet.copy(alpha = 0.10f)).padding(10.dp)
-    ) {
-        Row(
-            Modifier.fillMaxWidth().clickable { open = !open },
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Default.Psychology, null, Modifier.size(15.dp), tint = Violet)
-            Spacer(Modifier.width(6.dp))
-            Text(
-                if (open) "بازاندیشی" else "نمایش بازاندیشی",
-                style = MaterialTheme.typography.labelSmall, color = Violet,
-            )
-        }
-        AnimatedVisibility(open) {
-            Text(text, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = TextMid)
-        }
+/**
+ * یک فعالیتِ پایینِ پیام: صدا زدن یک ابزار، اجرای یک دستور، یا متن بازاندیشی.
+ *
+ * همهٔ این‌ها به‌صورت ردیف‌های کوچک و یکدست نشان داده می‌شوند (نه کادر بزرگ
+ * مراحل اجرا): یک آیکون کوچک، یک خط خلاصه، و با کلیک، متن کامل با فونت ریز.
+ */
+private data class ActivityItem(
+    val icon: ImageVector,
+    val tint: Color,
+    val title: String,
+    val status: String,
+    val detail: String,
+)
+
+/** آیکون مناسب برای هر ابزار، بر اساس نام آن (نام ابزارها از سرور می‌آید). */
+private fun toolIcon(name: String): ImageVector {
+    val n = name.lowercase()
+    return when {
+        n.contains("shell") || n.contains("bash") || n.contains("terminal") ||
+            n.contains("command") || n.contains("cmd") || n.contains("exec") -> Icons.Default.Terminal
+        n.contains("file") || n.contains("read") || n.contains("cat") -> Icons.Default.Description
+        n.contains("write") || n.contains("edit") || n.contains("save") || n.contains("patch") -> Icons.Default.Edit
+        n.contains("search") || n.contains("grep") || n.contains("find") || n.contains("glob") -> Icons.Default.Search
+        n.contains("web") || n.contains("http") || n.contains("url") || n.contains("fetch") -> Icons.Default.Public
+        n.contains("todo") || n.contains("task") || n.contains("plan") -> Icons.Default.Checklist
+        n.contains("code") || n.contains("script") || n.contains("python") || n.contains("eval") -> Icons.Default.Code
+        n.contains("folder") || n.contains("dir") || n.contains("tree") -> Icons.Default.Folder
+        n.contains("memory") || n.contains("remember") || n.contains("know") -> Icons.Default.Memory
+        n.contains("skill") || n.contains("tool") -> Icons.Default.Build
+        else -> Icons.Default.Build
     }
 }
 
-@Composable
-private fun ToolChip(name: String, status: String, detail: String) {
-    val c = when (status) {
-        "پایان" -> Lime
-        "نیازمند تأیید" -> Gold
-        else -> Cyan
+/**
+ * فعالیتهای یک پیام را می‌سازد: ابتدا بازاندیشی (اگر هست)، سپس ابزارها.
+ *
+ * نکته: متن بازاندیشی از بالای پیام به اینجا منتقل شد تا دقیقاً مثل صدا زدن
+ * ابزار یا اجرای دستور، یک ردیف کوچک در پایین پیام باشد.
+ */
+private fun activityItems(m: ir.hermes.mobile.data.ChatMessage): List<ActivityItem> {
+    val out = ArrayList<ActivityItem>()
+    if (m.reasoning.isNotBlank()) {
+        val thinking = m.pending && m.text.isBlank()
+        out += ActivityItem(
+            icon = Icons.Default.Psychology,
+            tint = Violet,
+            title = "بازاندیشی",
+            status = if (thinking) "در حال اجرا" else "پایان",
+            detail = m.reasoning,
+        )
     }
-    Row(
-        Modifier.padding(top = 8.dp).fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(c.copy(alpha = 0.10f))
-            .padding(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    m.tools.forEach { t ->
+        out += ActivityItem(
+            icon = toolIcon(t.name),
+            tint = when (t.status) {
+                "پایان" -> Lime
+                "نیازمند تأیید" -> Gold
+                else -> Cyan
+            },
+            title = t.name,
+            status = t.status,
+            detail = t.detail,
+        )
+    }
+    return out
+}
+
+@Composable
+private fun ActivityRow(a: ActivityItem) {
+    var open by remember { mutableStateOf(false) }
+    val canOpen = a.detail.isNotBlank()
+    Column(
+        Modifier.fillMaxWidth().padding(top = 6.dp)
+            .clip(RoundedCornerShape(9.dp))
+            .background(a.tint.copy(alpha = 0.09f))
+            .then(if (canOpen) Modifier.clickable { open = !open } else Modifier)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
     ) {
-        Icon(Icons.Default.Build, null, Modifier.size(14.dp), tint = c)
-        Spacer(Modifier.width(6.dp))
-        Column(Modifier.weight(1f)) {
-            Text(name, style = MaterialTheme.typography.labelMedium, color = c)
-            if (detail.isNotBlank()) Text(detail, style = MaterialTheme.typography.labelSmall, color = TextMid)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(a.icon, null, Modifier.size(13.dp), tint = a.tint)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                a.title,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextHi,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            if (a.status == "در حال اجرا") {
+                CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp, color = a.tint)
+            } else {
+                Text(a.status, style = MaterialTheme.typography.labelSmall, color = a.tint, maxLines = 1)
+            }
+            if (canOpen) {
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    null, Modifier.size(12.dp), tint = TextLow,
+                )
+            }
         }
-        Text(status, style = MaterialTheme.typography.labelSmall, color = c)
+        AnimatedVisibility(open) {
+            Text(
+                a.detail,
+                Modifier.fillMaxWidth().padding(top = 5.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = TextMid,
+            )
+        }
     }
 }

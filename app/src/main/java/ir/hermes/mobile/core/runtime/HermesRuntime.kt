@@ -21,8 +21,8 @@ import java.security.SecureRandom
  * نشان آمادگی (روی stdout):
  *   HERMES_BACKEND_READY port=NNNN
  *
- * توکن توسط خودِ اپ ساخته و به هرمس تزریق میشود؛ همان توکن برای
- * احراز هویت REST (Bearer) و وبسوکت (?token=) استفاده میشود.
+ * توکن توسط خودِ اپ ساخته و به هرمس تزریق می‌شود؛ همان توکن برای
+ * احراز هویت REST (Bearer) و وبسوکت (?token=) استفاده می‌شود.
  */
 object HermesRuntime {
 
@@ -89,12 +89,12 @@ object HermesRuntime {
 
     /**
      * بالا آوردن سرور. اگر از قبل در حال اجراست، بلافاصله برمیگردد.
-     * نتیجه از طریق [state] دنبال میشود.
+     * نتیجه از طریق [state] دنبال می‌شود.
      */
     @Synchronized
     fun start(ctx: Context) {
         if (isRunning) {
-            if (_state.value.state == State.STOPPED) _state.value = Snapshot(State.STARTING, message = "در حال انتظار...")
+            if (_state.value.state == State.STOPPED) _state.value = Snapshot(State.STARTING, message = "در حال انتظار…")
             return
         }
         val app = ctx.applicationContext
@@ -110,7 +110,7 @@ object HermesRuntime {
 
         val token = generateToken()
         val port = freePort()
-        _state.value = Snapshot(State.STARTING, token = token, message = "راهاندازی سرور هرمس...")
+        _state.value = Snapshot(State.STARTING, token = token, message = "راه‌اندازی سرور هرمس...")
         _logs.value = emptyList()
 
         val bin = RootfsInstaller.binDir(app)
@@ -192,7 +192,7 @@ object HermesRuntime {
             try {
                 Thread.sleep(90_000)
                 if (_state.value.state == State.STARTING) {
-                    log("مهلت راهاندازی تمام شد")
+                    log("مهلت راه‌اندازی تمام شد")
                     stopInternal()
                     _state.value = Snapshot(
                         State.FAILED, token = token,
@@ -258,7 +258,7 @@ object HermesRuntime {
 
         cmd += "-w"; cmd += "/root"
 
-        // محیط کاملاً تمیز مهمان — فقط همینجا HERMES_DASHBOARD_SESSION_TOKEN تزریق میشود
+        // محیط کاملاً تمیز مهمان — فقط همینجا HERMES_DASHBOARD_SESSION_TOKEN تزریق می‌شود
         cmd += "/usr/bin/env"; cmd += "-i"
         cmd += "HOME=/root"
         cmd += "USER=root"

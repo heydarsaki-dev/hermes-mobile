@@ -23,7 +23,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * کارت «هرمس داخل خودِ اپ»: نصب rootfs و بالا آوردن سرور بدون ترموکس.
- * پس از READY، آدرس و توکن آماده میشود و [onReady] صدا زده میشود.
+ * پس از READY، آدرس و توکن آماده می‌شود و [onReady] صدا زده می‌شود.
  */
 @Composable
 fun RuntimeCard(onReady: (url: String, token: String) -> Unit) {
@@ -68,8 +68,8 @@ fun RuntimeCard(onReady: (url: String, token: String) -> Unit) {
         }
         Spacer(Modifier.height(10.dp))
         Text(
-            "ترموکس لازم نیست؛ سرور هرمس درون خودِ گوشی نصب و اجرا میشود.\n" +
-                "دادهٔ سیستمی (~۷۶ مگابایت) هنگام نصب از اینترنت دانلود میشود، پس بهتر است به وای‌فای وصل باشید.",
+            "ترموکس لازم نیست؛ سرور هرمس درون خودِ گوشی نصب و اجرا می‌شود.\n" +
+                "دادهٔ سیستمی (~۷۶ مگابایت) هنگام نصب از اینترنت دانلود می‌شود، پس بهتر است به وای‌فای وصل باشید.",
             style = MaterialTheme.typography.bodySmall, color = TextMid, textAlign = TextAlign.Center,
         )
 
@@ -107,7 +107,7 @@ fun RuntimeCard(onReady: (url: String, token: String) -> Unit) {
         Spacer(Modifier.height(14.dp))
 
         when {
-            installing -> GhostButton("در حال نصب...", onClick = {}, modifier = Modifier.fillMaxWidth(), color = TextMid)
+            installing -> GhostButton("در حال نصب…", onClick = {}, modifier = Modifier.fillMaxWidth(), color = TextMid)
             !installed -> PrimaryButton("نصب هرمس درون اپ (دانلود ۷۶ مگابایت)", onClick = {
                 installing = true
                 localError = null
