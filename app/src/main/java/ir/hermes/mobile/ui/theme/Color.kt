@@ -2,21 +2,50 @@ package ir.hermes.mobile.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// تم تیره — پس‌زمینه‌ی عمیق با لهجه‌ی طلایی هرمس
-val Ink0 = Color(0xFF08090D)
-val Ink1 = Color(0xFF0E1116)
-val Ink2 = Color(0xFF151922)
-val Ink3 = Color(0xFF1D222D)
-val Ink4 = Color(0xFF272D3A)
-val Gold = Color(0xFFF5C518)
-val GoldDim = Color(0xFFB8920F)
-val Cyan = Color(0xFF3DD6D0)
-val Violet = Color(0xFF9B7BFF)
-val Rose = Color(0xFFFF6B81)
-val Lime = Color(0xFF7BD88F)
-val Amber = Color(0xFFFFB454)
-val TextHi = Color(0xFFF2F4F8)
-val TextMid = Color(0xFFA8B0C0)
-// متن کم‌اهمیت/راهنما: کمی روشن‌تر شد تا روی پس‌زمینه‌های تیره
-// (و کارت‌های نیمه‌شفاف) واضح دیده شود. قبلاً 0xFF6B7484 بود.
-val TextLow = Color(0xFF808A9D)
+// ─────────────────────────────────────────────────────────────────────────────
+// پالت «شب قطبی» — تم تیرهٔ مدرن
+//
+// پس‌زمینهٔ سرمهٔ عمیق با لهجهٔ نیلیِ روشن و فیروزه‌ای/نعنایی. سطوح عمداً
+// کم‌اشباع‌اند تا روی نمایشگرهای OLED آرام و خوانا بمانند و لهجه‌ها فقط برای
+// دکمه‌ها، وضعیت‌ها و نمودارها استفاده شوند.
+//
+// نام‌های قدیمی (Ink*/Gold/Cyan/…) به‌عنوان نام مستعار پایین نگه داشته شده‌اند
+// تا صفحه‌هایی که از آن‌ها استفاده می‌کنند بدون تغییر ظاهریِ درست کار کنند.
+// کد تازه باید از نام‌های معنادار (Night*/Accent/Mint/…) استفاده کند.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// سطوح، از عمیق‌ترین به روشن‌ترین
+val Night0 = Color(0xFF070A12) // بوم اصلی
+val Night1 = Color(0xFF0C111C) // کارت‌ها و نوارها
+val Night2 = Color(0xFF131A28) // کارت‌های تودرتو
+val Night3 = Color(0xFF1B2436) // سطح فیلدهای ورودی
+val Night4 = Color(0xFF26334A) // حاشیه‌ها
+
+// لهجه‌ها
+val Accent = Color(0xFF7C8CFF) // نیلیِ روشن — لهجهٔ اصلی
+val AccentDim = Color(0xFF4E5BD6)
+val Mint = Color(0xFF4FD1C5) // فیروزه‌ای
+val Lilac = Color(0xFFB388FF) // بنفش ملایم
+val Blush = Color(0xFFFF6B8A) // صورتیِ هشدار
+val Spring = Color(0xFF5BE49B) // سبز نعنایی موفقیت
+val Sand = Color(0xFFFFC46B) // کهربایی ملایم
+
+// متن
+val TextHi = Color(0xFFEEF1F8)
+val TextMid = Color(0xFFA7B0C6)
+// متن کم‌اهمیت/راهنما — روی سطوح تیره و کارت‌های نیمه‌شفاف هم خوانا بماند
+val TextLow = Color(0xFF7B87A1)
+
+// ── نام‌های مستعار سازگار با کد موجود ──
+val Ink0 = Night0
+val Ink1 = Night1
+val Ink2 = Night2
+val Ink3 = Night3
+val Ink4 = Night4
+val Gold = Accent
+val GoldDim = AccentDim
+val Cyan = Mint
+val Violet = Lilac
+val Rose = Blush
+val Lime = Spring
+val Amber = Sand

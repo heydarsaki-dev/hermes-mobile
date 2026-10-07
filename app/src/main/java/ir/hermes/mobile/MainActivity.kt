@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import ir.hermes.mobile.core.datastore.ModelSelection
 import ir.hermes.mobile.core.datastore.ServerConfig
 import ir.hermes.mobile.core.net.RpcEvent
 import ir.hermes.mobile.core.runtime.HermesRuntime
@@ -79,6 +80,8 @@ private fun Root() {
     var loading by remember { mutableStateOf(true) }
     val status by HermesRepo.socket.status.collectAsState()
     var sid by remember { mutableStateOf("") }
+    // مدلی که کاربر انتخاب کرده؛ نشست‌های جدید با همین ساخته می‌شوند
+    val selection by HermesRepo.settings.selection.collectAsState(initial = ModelSelection())
 
     // اتصال رویدادهای سوکت به موتور چت
     LaunchedEffect(Unit) {
@@ -195,6 +198,7 @@ private fun Root() {
                             engine = engine,
                             title = "",
                             statusLive = status == RpcEvent.State.CONNECTED,
+                            modelLabel = selection.model.ifBlank { "" },
                             onNewSession = {
                                 scope.launch {
                                     HermesRepo.createSession("گفت‌وگوی جدید")?.let { id ->
@@ -205,6 +209,16 @@ private fun Root() {
                             },
                             onOpenSessions = { route = "sessions" },
                             onOpenModel = { route = "model" },
+                            // تغییر مدل از داخل چت: نوبت جاری متوقف و نشست فعلی
+                            // کنار گذاشته می‌شود تا نشست بعدی با مدل تازه ساخته شود
+                            onApplyModel = { p, m, b ->
+                                scope.launch {
+                                    val err = HermesRepo.applyModel(p, m, b)
+                                    engine.resetForNewSession()
+                                    sid = ""
+                                    if (err != null) engine.notice.value = err
+                                }
+                            },
                         )
                         "sessions" -> SessionsScreen({ route = "hub" }) { id -> HermesRepo.startSession(id); sid = id; route = "chat" }
                         "model" -> ModelScreen(

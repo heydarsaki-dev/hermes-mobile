@@ -7,46 +7,55 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 
 private val DarkScheme = darkColorScheme(
-    primary = Gold,
-    onPrimary = Ink0,
-    primaryContainer = GoldDim,
-    onPrimaryContainer = Ink0,
-    secondary = Cyan,
-    onSecondary = Ink0,
-    tertiary = Violet,
-    onTertiary = Ink0,
-    background = Ink0,
+    primary = Accent,
+    onPrimary = Night0,
+    primaryContainer = AccentDim,
+    onPrimaryContainer = TextHi,
+    secondary = Mint,
+    onSecondary = Night0,
+    tertiary = Lilac,
+    onTertiary = Night0,
+    background = Night0,
     onBackground = TextHi,
-    surface = Ink1,
+    surface = Night1,
     onSurface = TextHi,
-    surfaceVariant = Ink3,
+    surfaceVariant = Night3,
     onSurfaceVariant = TextMid,
-    outline = Ink4,
-    outlineVariant = Ink2,
-    error = Rose,
-    onError = Ink0,
+    surfaceDim = Night0,
+    surfaceBright = Night4,
+    surfaceContainerLowest = Night0,
+    surfaceContainerLow = Night1,
+    surfaceContainer = Night1,
+    surfaceContainerHigh = Night2,
+    surfaceContainerHighest = Night3,
+    outline = Night4,
+    outlineVariant = Night2,
+    scrim = Night0,
+    error = Blush,
+    onError = Night0,
 )
 
 private val LightScheme = lightColorScheme(
-    primary = Color(0xFF8A6D00),
+    primary = AccentDim,
     onPrimary = Color.White,
-    secondary = Color(0xFF00857E),
-    tertiary = Color(0xFF6244C4),
-    background = Color(0xFFF7F8FA),
-    onBackground = Ink1,
+    secondary = Color(0xFF1F8E86),
+    tertiary = Color(0xFF6B4FD1),
+    background = Color(0xFFF6F7FB),
+    onBackground = Night1,
     surface = Color.White,
-    onSurface = Ink1,
-    surfaceVariant = Color(0xFFEDEEF2),
-    onSurfaceVariant = Color(0xFF4A5160),
+    onSurface = Night1,
+    surfaceVariant = Color(0xFFE9ECF5),
+    onSurfaceVariant = Color(0xFF4A5265),
+    outline = Color(0xFFC7CCDB),
 )
 
 @Composable
 fun HermesTheme(
-    // این اپ عمداً دارک طراحی شده و همه‌ی پس‌زمینه‌ها با رنگ‌های تیرهٔ Ink
+    // این اپ عمداً دارک طراحی شده و همه‌ی پس‌زمینه‌ها با سطوح تیرهٔ Night
     // ساخته شده‌اند (گرادیان‌ها، کارت‌های شیشه‌ای و ترمینال). اگر از حالت
     // سیستم تبعیت کنیم، وقتی گوشی در حالت روشن باشد اسکیمای روشن انتخاب
-    // می‌شود؛ آن‌وقت رنگ متن‌ها تیره (Ink1) می‌شود و روی پس‌زمینهٔ تیره
-    // کاملاً ناپدید می‌شوند. پس تم تیره را همیشه اعمال می‌کنیم.
+    // می‌شود؛ آن‌وقت رنگ متن‌ها تیره می‌شود و روی پس‌زمینهٔ تیره کاملاً
+    // ناپدید می‌شوند. پس تم تیره را همیشه اعمال می‌کنیم.
     dark: Boolean = true,
     content: @Composable () -> Unit,
 ) {

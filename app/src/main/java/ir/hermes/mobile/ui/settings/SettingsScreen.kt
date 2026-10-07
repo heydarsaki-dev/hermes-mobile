@@ -20,12 +20,15 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import ir.hermes.mobile.core.net.RpcEvent
+import ir.hermes.mobile.core.runtime.HermesRuntime
 import ir.hermes.mobile.core.util.CrashLogger
 import ir.hermes.mobile.core.util.Jalali
 import ir.hermes.mobile.data.HermesRepo
 import ir.hermes.mobile.data.J
 import ir.hermes.mobile.ui.components.*
 import ir.hermes.mobile.ui.theme.*
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -35,8 +38,6 @@ fun SettingsScreen(onBack: () -> Unit, onLoggedOut: () -> Unit) {
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    var url by remember { mutableStateOf(HermesRepo.api.baseUrl) }
-    var token by remember { mutableStateOf(HermesRepo.api.token) }
     var usage by remember { mutableStateOf<JsonObject?>(null) }
     var msg by remember { mutableStateOf<String?>(null) }
     var serverLog by remember { mutableStateOf<String?>(null) }
@@ -54,20 +55,49 @@ fun SettingsScreen(onBack: () -> Unit, onLoggedOut: () -> Unit) {
         Column(
             Modifier.fillMaxSize().padding(pad).padding(14.dp).verticalScroll(rememberScrollState())
         ) {
-            SectionTitle("اتصال")
-            GlassCard(Modifier.fillMaxWidth()) {
-                LabeledField("آدرس سرور", url, { url = it })
-                Spacer(Modifier.height(12.dp))
-                LabeledField("توکن", token, { token = it }, visualTransformation = PasswordVisualTransformation())
-                Spacer(Modifier.height(16.dp))
-                PrimaryButton("ذخیره و اتصال مجدد", {
-                    scope.launch {
-                        HermesRepo.settings.save(url, token)
-                        HermesRepo.applyConfig(ir.hermes.mobile.core.datastore.ServerConfig(url, token))
-                        HermesRepo.socket.connect()
-                        msg = "تنظیمات ذخیره و اتصال برقرار شد"
-                    }
-                }, Modifier.fillMaxWidth(), icon = Icons.Default.Save)
+            // دیگر لازم نیست کاربر آدرس/توکن سرور بیرونی را دستی وارد کند؛
+            // هرمس داخل خود اپ اجرا می‌شود و آدرس و توکن در هر اجرا خودکار
+            // ساخته و مدیریت می‌شوند. این کارت فقط وضعیت را نشان می‌دهد.
+            SectionTitle("سرور هرمس")
+            GlassCard(Modifier.fillMaxWidth(), borderColor = Accent.copy(alpha = 0.25f)) {
+                val st by HermesRepo.socket.status.collectAsState()
+                val sel by HermesRepo.settings.selection.collectAsState(
+                    initial = ir.hermes.mobile.core.datastore.ModelSelection()
+                )
+                LabeledValue("حالت", "درون‌اپی — روی همین گوشی")
+                LabeledValue("آدرس", HermesRepo.api.baseUrl.ifBlank { "—" })
+                LabeledValue(
+                    "وضعیت",
+                    when (st) {
+                        RpcEvent.State.CONNECTED -> "متصل"
+                        RpcEvent.State.CONNECTING -> "در حال اتصال"
+                        RpcEvent.State.FAILED -> "خطای اتصال"
+                        RpcEvent.State.CLOSED -> "قطع"
+                    },
+                )
+                LabeledValue("مدل انتخابی", sel.model.ifBlank { "پیش‌فرض سرور" })
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "نیازی به دادن لینک سرور بیرونی نیست؛ هرمس درون خود اپ بالا می‌آید و نشست/توکن در هر اجرا خودکار ساخته و مدیریت می‌شود.",
+                    style = MaterialTheme.typography.bodySmall, color = TextLow,
+                )
+                Spacer(Modifier.height(14.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PrimaryButton("اتصال مجدد", {
+                        scope.launch {
+                            HermesRepo.applyConfig(HermesRepo.settings.config.first())
+                            HermesRepo.socket.connect()
+                            msg = "در حال اتصال مجدد…"
+                        }
+                    }, Modifier.weight(1f), icon = Icons.Default.Refresh)
+                    GhostButton("راه‌اندازی دوباره هرمس", {
+                        scope.launch {
+                            runCatching { HermesRuntime.stop() }
+                            runCatching { HermesRuntime.start(ctx) }
+                            msg = "هرمس در حال راه‌اندازی دوباره است"
+                        }
+                    }, Modifier.weight(1f), color = Mint, icon = Icons.Default.RestartAlt)
+                }
             }
 
             Spacer(Modifier.height(18.dp))

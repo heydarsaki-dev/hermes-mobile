@@ -8,8 +8,12 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -17,17 +21,26 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import ir.hermes.mobile.core.datastore.ModelSelection
 import ir.hermes.mobile.core.util.Jalali
 import ir.hermes.mobile.data.HermesRepo
 import ir.hermes.mobile.data.J
 import ir.hermes.mobile.ui.components.*
 import ir.hermes.mobile.ui.theme.*
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Forum
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 
+/**
+ * صفحهٔ نشست‌ها.
+ *
+ * نکات مهم این نسخه:
+ *  - فهرست از کش محلی بلافاصله نشان داده می‌شود و بعد تازه‌سازی می‌شود؛
+ *    قبلاً هر بار باید منتظر پاسخ کندِ هرمس می‌ماندیم.
+ *  - «نشست جدید» با مدل/پرووایدری که کاربر انتخاب کرده ساخته می‌شود
+ *    (override همان نشست)، پس مدل انتخابی واقعاً روی نشست ست می‌شود.
+ *  - حذف بدون دیالوگ تأیید انجام می‌شود. اگر نشست همان نشست فعال باشد، اول
+ *    بسته می‌شود چون هرمس حذف نشست زنده را رد می‌کند (cannot delete an active session).
+ */
 @Composable
 fun SessionsScreen(onBack: () -> Unit, onPicked: (String) -> Unit) {
     val scope = rememberCoroutineScope()
@@ -35,53 +48,97 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (String) -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<JsonObject?>(null) }
+    var activeSid by remember { mutableStateOf(HermesRepo.socket.sessionId) }
+    val selection by HermesRepo.settings.selection.collectAsState(initial = ModelSelection())
 
     suspend fun load() {
         loading = true; error = null
+        activeSid = HermesRepo.socket.sessionId
         HermesRepo.sessions()
-            .onSuccess { r ->
-                items = J.listOf(J.obj(r), "sessions", "items").map { J.obj(it) }
-            }
-            .onFailure { error = it.message }
+            .onSuccess { r -> items = J.listOf(J.obj(r), "sessions", "items").map { J.obj(it) } }
+            .onFailure { if (items.isEmpty()) error = it.message }
         loading = false
     }
-    LaunchedEffect(Unit) { load() }
+
+    // کش محلی: همان لحظه محتوا نشان بده، بعد تازه کن
+    LaunchedEffect(Unit) {
+        HermesRepo.cachedSessions()?.let { cached ->
+            val list = cached.map { J.obj(it) }
+            if (list.isNotEmpty()) { items = list; loading = false }
+        }
+        load()
+    }
+
+    fun deleteSession(s: JsonObject) {
+        val id = J.str(s, "id", J.str(s, "session_id"))
+        if (id.isBlank()) { error = "شناسهٔ نشست خالی است"; return }
+        scope.launch {
+            // حذف نشست زنده در هرمس رد می‌شود؛ اول ببندش
+            if (id == HermesRepo.socket.sessionId) {
+                HermesRepo.closeSession(id)
+                HermesRepo.clearSession()
+            }
+            HermesRepo.deleteSession(id).onFailure { error = it.message }
+            load()
+        }
+    }
 
     Scaffold(containerColor = Color.Transparent,
-        topBar = { TopBar("نشست‌ها", onBack) {
-            IconButton(onClick = { scope.launch { load() } }) { Icon(Icons.Default.Refresh, "تازه‌سازی", tint = TextMid) }
-        } }
+        topBar = {
+            TopBar("نشست‌ها", onBack) {
+                IconButton(onClick = { scope.launch { load() } }) {
+                    Icon(Icons.Default.Refresh, "تازه‌سازی", tint = TextMid)
+                }
+            }
+        }
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad).padding(horizontal = 14.dp)) {
             Spacer(Modifier.height(4.dp))
+
+            // مدلی که نشست‌های جدید با آن ساخته می‌شوند
+            GlassCard(Modifier.fillMaxWidth(), borderColor = Accent.copy(alpha = 0.25f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.AutoAwesome, null, Modifier.size(16.dp), tint = Accent)
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("مدل نشست‌های جدید", style = MaterialTheme.typography.labelMedium, color = TextMid)
+                        Text(
+                            selection.model.ifBlank { "از پیش‌فرض سرور استفاده می‌شود" },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (selection.model.isBlank()) TextLow else TextHi,
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
             PrimaryButton("نشست جدید", {
                 scope.launch {
-                    HermesRepo.newSession("گفت‌وگوی جدید")
-                        .onSuccess { load() }
-                        .onFailure { error = it.message }
+                    error = null
+                    val id = HermesRepo.createSession("گفت‌وگوی جدید")
+                    if (id == null) error = "ساخت نشست ناموفق بود — اتصال را بررسی کنید"
+                    load()
                 }
             }, Modifier.fillMaxWidth(), icon = Icons.Default.Add)
             Spacer(Modifier.height(12.dp))
+
             error?.let { ErrorBanner(it) { scope.launch { load() } } }
+
             when {
-                loading -> LoadingRow()
+                loading && items.isEmpty() -> LoadingRow()
                 items.isEmpty() -> EmptyState("نشستی وجود ندارد", Icons.Default.Forum)
                 else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // کلید یکتا: بعضی پاسخ‌ها فقط session_id دارند و id خالی می‌ماند
                     itemsIndexed(
                         items,
-                        key = { i, s -> "$i:${J.str(s, "id", J.str(s, "session_id"))}" },
+                        key = { i, s -> i.toString() + ":" + J.str(s, "id", J.str(s, "session_id")) },
                     ) { _, s ->
+                        val id = J.str(s, "id", J.str(s, "session_id"))
                         SessionRow(
-                            s,
-                            onOpen = {
-                                val id = J.str(s, "id", J.str(s, "session_id"))
-                                scope.launch { HermesRepo.resume(id); onPicked(id) }
-                            },
+                            s = s,
+                            isActive = id == activeSid,
+                            onOpen = { scope.launch { HermesRepo.resume(id); onPicked(id) } },
                             onRename = { renaming = s },
-                            onDelete = {
-                                scope.launch { HermesRepo.deleteSession(J.str(s, "id")); load() }
-                            },
+                            onDelete = { deleteSession(s) },
                         )
                     }
                     item { Spacer(Modifier.height(16.dp)) }
@@ -98,7 +155,11 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (String) -> Unit) {
             text = { LabeledField("عنوان", t, { t = it }) },
             confirmButton = {
                 TextButton(onClick = {
-                    scope.launch { HermesRepo.setTitle(J.str(s, "id"), t); renaming = null; load() }
+                    scope.launch {
+                        HermesRepo.setTitle(J.str(s, "id", J.str(s, "session_id")), t)
+                        renaming = null
+                        load()
+                    }
                 }) { Text("ذخیره") }
             },
             dismissButton = { TextButton(onClick = { renaming = null }) { Text("انصراف") } },
@@ -107,10 +168,16 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (String) -> Unit) {
 }
 
 @Composable
-private fun SessionRow(s: JsonObject, onOpen: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+private fun SessionRow(
+    s: JsonObject,
+    isActive: Boolean,
+    onOpen: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val id = J.str(s, "id", J.str(s, "session_id"))
-    val title = J.str(s, "title").ifBlank { "بدون عنوان" }
-    val ts = J.num(s, "updated_at", J.num(s, "created_at", 0.0)).toLong()
+    val title = J.str(s, "title").ifBlank { J.str(s, "preview").ifBlank { "بدون عنوان" } }
+    val ts = J.num(s, "updated_at", J.num(s, "started_at", J.num(s, "created_at", 0.0))).toLong()
     Row(
         Modifier.fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
@@ -120,19 +187,26 @@ private fun SessionRow(s: JsonObject, onOpen: () -> Unit, onRename: () -> Unit, 
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, modifier = Modifier.weight(1f, false))
+                if (isActive) { Spacer(Modifier.width(6.dp)); Pill("فعال", Accent) }
+            }
             Spacer(Modifier.height(3.dp))
             Text(
                 listOfNotNull(
                     id.take(8),
                     if (ts > 0) Jalali.ago(ts * 1000) else null,
-                    J.int(s, "message_count", -1).takeIf { it >= 0 }?.let { "${Jalali.fa(it)} پیام" }
+                    J.int(s, "message_count", -1).takeIf { it >= 0 }?.let { Jalali.fa(it) + " پیام" },
                 ).joinToString(" • "),
                 style = MaterialTheme.typography.bodySmall, color = TextLow,
             )
         }
-        IconButton(onClick = onRename, Modifier.size(34.dp)) { Icon(Icons.Default.Edit, "تغییر نام", Modifier.size(15.dp), tint = TextMid) }
-        IconButton(onClick = onDelete, Modifier.size(34.dp)) { Icon(Icons.Default.Delete, "حذف", Modifier.size(15.dp), tint = Rose) }
+        IconButton(onClick = onRename, Modifier.size(34.dp)) {
+            Icon(Icons.Default.Edit, "تغییر نام", Modifier.size(15.dp), tint = TextMid)
+        }
+        IconButton(onClick = onDelete, Modifier.size(34.dp)) {
+            Icon(Icons.Default.Delete, "حذف", Modifier.size(15.dp), tint = Rose)
+        }
         Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(16.dp), tint = TextLow)
     }
 }

@@ -7,6 +7,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -25,23 +27,32 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ir.hermes.mobile.core.datastore.ModelSelection
 import ir.hermes.mobile.data.ChatEngine
+import ir.hermes.mobile.data.HermesRepo
+import ir.hermes.mobile.data.J
 import ir.hermes.mobile.data.MsgRole
 import ir.hermes.mobile.data.TurnState
 import ir.hermes.mobile.ui.components.*
 import ir.hermes.mobile.ui.theme.*
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 @Composable
 fun ChatScreen(
     engine: ChatEngine,
     title: String,
     statusLive: Boolean,
+    modelLabel: String,
     onNewSession: () -> Unit,
     onOpenSessions: () -> Unit,
     onOpenModel: () -> Unit,
+    onApplyModel: (provider: String, model: String, baseUrl: String) -> Unit,
 ) {
     val listState = rememberLazyListState()
+    var showModelPicker by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
     val msgs by engine.messages.collectAsState()
@@ -97,6 +108,28 @@ fun ChatScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = TextMid,
                         )
+                    }
+                    // انتخاب مدل همون‌جا در چت: لمس کن، مدل تازه را بزن؛
+                    // نشست فعلی کنار گذاشته می‌شود و نشست بعدی با همان مدل
+                    // ساخته می‌شود (مدل هر نشست در هرمس هنگام ساخت ثابت می‌شود).
+                    Row(
+                        Modifier
+                            .padding(top = 3.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(Accent.copy(alpha = 0.12f))
+                            .clickable { showModelPicker = true }
+                            .padding(horizontal = 7.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Default.AutoAwesome, null, Modifier.size(11.dp), tint = Accent)
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            modelLabel.ifBlank { "انتخاب مدل" },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Accent,
+                            maxLines = 1,
+                        )
+                        Icon(Icons.Default.ExpandMore, null, Modifier.size(12.dp), tint = Accent)
                     }
                 }
                 IconButton(onClick = onOpenModel) { Icon(Icons.Default.Tune, "مدل", tint = TextMid) }
@@ -172,6 +205,142 @@ fun ChatScreen(
             if (st == TurnState.THINKING) item { ThinkingDots() }
         }
     }
+
+    if (showModelPicker) {
+        ModelPickerDialog(
+            onDismiss = { showModelPicker = false },
+            onPick = { p, m, b ->
+                showModelPicker = false
+                onApplyModel(p, m, b)
+            },
+        )
+    }
+}
+
+/** یک گزینهٔ قابل انتخاب در انتخابگر مدل */
+private data class ModelChoice(
+    val provider: String,
+    val providerLabel: String,
+    val model: String,
+    val baseUrl: String,
+)
+
+/** استخراج فهرست شناسه‌های مدل از آرایهٔ JSON (رشته یا آبجکت با id/name). */
+private fun jsonStrings(arr: JsonArray): List<String> =
+    arr.mapNotNull { el ->
+        (el as? JsonPrimitive)?.content
+            ?: (el as? JsonObject)?.let { J.str(it, "id", J.str(it, "name")) }
+    }.filter { it.isNotBlank() }
+
+/**
+ * انتخابگر مدل که همان‌جا در صفحهٔ چت باز می‌شود.
+ *
+ * اول از کش محلی پر می‌شود (فوری) و بعد در پس‌زمینه از هرمس تازه می‌شود؛
+ * چون خواندن مدل‌ها از سرور روی گوشی کند است.
+ */
+@Composable
+private fun ModelPickerDialog(
+    onDismiss: () -> Unit,
+    onPick: (String, String, String) -> Unit,
+) {
+    var choices by remember { mutableStateOf<List<ModelChoice>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val selection by HermesRepo.settings.selection.collectAsState(initial = ModelSelection())
+
+    fun fromCache(): List<ModelChoice> {
+        val out = ArrayList<ModelChoice>()
+        HermesRepo.cachedModelOptions()?.let { opts ->
+            for (el in J.listOf(opts, "providers")) {
+                val p = J.obj(el)
+                val slug = J.str(p, "slug", J.str(p, "name"))
+                if (slug.isBlank()) continue
+                val label = J.str(p, "name", slug)
+                for (m in jsonStrings(J.listOf(p, "models"))) {
+                    out += ModelChoice(slug, label, m, "")
+                }
+            }
+        }
+        HermesRepo.cachedEndpoints()?.let { eps ->
+            for (el in eps) {
+                val e = J.obj(el)
+                val id = J.str(e, "id", J.str(e, "name"))
+                if (id.isBlank()) continue
+                val label = J.str(e, "name", id)
+                val base = J.str(e, "base_url")
+                for (m in jsonStrings(J.listOf(e, "models"))) {
+                    out += ModelChoice(id, label, m, base)
+                }
+            }
+        }
+        return out
+    }
+
+    LaunchedEffect(Unit) {
+        choices = fromCache()
+        loading = choices.isEmpty()
+        HermesRepo.modelOptions().onFailure { if (choices.isEmpty()) error = it.message }
+        HermesRepo.customEndpoints()
+        choices = fromCache()
+        loading = false
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("تغییر مدل") },
+        text = {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                Text(
+                    "با انتخاب مدل، نوبت جاری متوقف می‌شود و نشست تازه‌ای با همان مدل ساخته می‌شود (هرمز مدل هر نشست را هنگام ساخت ثابت می‌کند).",
+                    style = MaterialTheme.typography.bodySmall, color = TextLow,
+                )
+                Spacer(Modifier.height(10.dp))
+                when {
+                    loading -> LoadingRow()
+                    choices.isEmpty() -> Text(
+                        error ?: "مدلی از سرور خوانده نشد",
+                        style = MaterialTheme.typography.bodySmall, color = TextMid,
+                    )
+                    else -> {
+                        var lastProvider = ""
+                        choices.take(120).forEach { c ->
+                            if (c.providerLabel != lastProvider) {
+                                lastProvider = c.providerLabel
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    c.providerLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Mint,
+                                )
+                            }
+                            val isSel = c.model == selection.model &&
+                                (selection.provider.isBlank() || c.provider == selection.provider)
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .then(
+                                        if (isSel) Modifier.background(Accent.copy(alpha = 0.14f))
+                                        else Modifier
+                                    )
+                                    .clickable { onPick(c.provider, c.model, c.baseUrl) }
+                                    .padding(horizontal = 8.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    if (isSel) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                    null, Modifier.size(15.dp),
+                                    tint = if (isSel) Accent else TextLow,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(c.model, style = MaterialTheme.typography.bodyMedium, color = TextHi, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("بستن") } },
+    )
 }
 
 @Composable

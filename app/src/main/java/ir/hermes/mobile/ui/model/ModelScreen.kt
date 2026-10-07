@@ -73,19 +73,20 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
         loading = false
     }
 
-    // انتخاب مدل اصلی؛ اگر هرمس برای مدل گران درخواست تأیید کند، همان پیام را نشان می‌دهیم.
+    /**
+     * انتخاب مدل.
+     *
+     * علاوه بر پیش‌فرض سرور، انتخاب کاربر روی دستگاه ذخیره می‌شود تا نشست‌های
+     * بعدی همین مدل را به‌عنوان override بگیرند؛ چون هرمس مدل هر نشست را هنگام
+     * ساخت آن ثابت می‌کند و `config.set` فقط پیش‌فرض سرور بود (علت اینکه مدل
+     * انتخابی روی نشست‌ها ست نمی‌شد).
+     */
     fun applyMain(provider: String, model: String, baseUrl: String = "") {
         scope.launch {
-            HermesRepo.setMainModel(provider, model, baseUrl)
-                .onSuccess { r ->
-                    val o = J.obj(r)
-                    if (J.bool(o, "confirm_required")) {
-                        error = J.str(o, "confirm_message", "انتخاب این مدل نیاز به تأیید دارد")
-                    } else {
-                        HermesRepo.clearSession(); onModelChanged(); load()
-                    }
-                }
-                .onFailure { error = it.message }
+            val err = HermesRepo.applyModel(provider, model, baseUrl)
+            if (err != null) error = err
+            onModelChanged()
+            load()
         }
     }
 
@@ -129,7 +130,7 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "تغییر مدل روی نشست‌های جدید اعمال می‌شود؛ در چت با دکمهٔ «نشست جدید» یک گفت‌وگوی تازه بسازید.",
+                        "با انتخاب هر مدل، همان مدل روی نشست‌های جدید ست می‌شود (نوبت جاری متوقف و نشست تازه با مدل جدید ساخته می‌شود). در صفحهٔ چت هم از نشان مدل بالای صفحه می‌توانید مدل را همین‌جا عوض کنید.",
                         style = MaterialTheme.typography.bodySmall, color = TextLow,
                     )
                 }
@@ -180,7 +181,13 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
                     onActivate = {
                         scope.launch {
                             HermesRepo.activateCustomEndpoint(J.str(e, "id"))
-                                .onSuccess { HermesRepo.clearSession(); onModelChanged(); load() }
+                                .onSuccess {
+                                    // انتخاب کاربر ثبت می‌شود تا نشست تازه با همین مدل ساخته شود
+                                    val eid = J.str(e, "id")
+                                    HermesRepo.applyModel(eid, J.str(e, "model"), J.str(e, "base_url"))
+                                    onModelChanged()
+                                    load()
+                                }
                                 .onFailure { error = it.message }
                         }
                     },
