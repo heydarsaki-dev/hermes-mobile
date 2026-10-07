@@ -42,7 +42,7 @@ import kotlinx.serialization.json.JsonObject
  *    بسته می‌شود چون هرمس حذف نشست زنده را رد می‌کند (cannot delete an active session).
  */
 @Composable
-fun SessionsScreen(onBack: () -> Unit, onPicked: (String) -> Unit) {
+fun SessionsScreen(onBack: () -> Unit, onPicked: (id: String, title: String) -> Unit) {
     val scope = rememberCoroutineScope()
     var items by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -141,7 +141,7 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (String) -> Unit) {
                                     // هرمس هنگام resume یک نشست زندهٔ تازه با شناسهٔ خودش
                                     // می‌سازد؛ باید همان شناسه برای گفت‌وگو استفاده شود.
                                     val live = HermesRepo.resume(id)
-                                    onPicked(live.ifBlank { id })
+                                    onPicked(live.ifBlank { id }, J.str(s, "title"))
                                 }
                             },
                             onRename = { renaming = s },

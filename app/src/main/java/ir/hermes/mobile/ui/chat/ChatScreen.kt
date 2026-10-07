@@ -38,6 +38,7 @@ import ir.hermes.mobile.data.TurnStep
 import ir.hermes.mobile.ui.components.*
 import ir.hermes.mobile.ui.theme.*
 import kotlinx.coroutines.launch
+import java.util.Locale
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -390,6 +391,7 @@ private fun WelcomeCard(onSuggestion: (String) -> Unit) {
  */
 @Composable
 private fun ActivityPanel(steps: List<TurnStep>, busy: Boolean) {
+    var openStep by remember { mutableStateOf<TurnStep?>(null) }
     GlassCard(
         Modifier.fillMaxWidth(),
         borderColor = Accent.copy(alpha = if (busy) 0.45f else 0.18f),
@@ -408,18 +410,25 @@ private fun ActivityPanel(steps: List<TurnStep>, busy: Boolean) {
             )
         }
         Spacer(Modifier.height(8.dp))
-        steps.forEach { s -> StepRow(s) }
+        steps.forEach { s -> StepRow(s) { openStep = s } }
     }
+    openStep?.let { s -> StepDetailDialog(s) { openStep = null } }
 }
 
 @Composable
-private fun StepRow(s: TurnStep) {
+private fun StepRow(s: TurnStep, onOpen: () -> Unit) {
     val c = when (s.status) {
         StepStatus.RUNNING -> Accent
         StepStatus.DONE -> Lime
         StepStatus.FAILED -> Rose
     }
-    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.Top) {
+    Row(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .then(if (s.openable) Modifier.clickable { onOpen() } else Modifier)
+            .padding(vertical = 3.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
         when (s.status) {
             StepStatus.RUNNING ->
                 CircularProgressIndicator(Modifier.padding(top = 3.dp).size(11.dp), strokeWidth = 2.dp, color = c)
@@ -433,7 +442,78 @@ private fun StepRow(s: TurnStep) {
                 Text(s.detail, style = MaterialTheme.typography.labelSmall, color = TextLow, maxLines = 3)
             }
         }
+        // نشانهٔ «قابل بازکردن»: کاربر می‌تواند روی مرحله بزند و جزئیات را ببیند.
+        if (s.openable) {
+            Spacer(Modifier.width(6.dp))
+            Text("جزئیات", style = MaterialTheme.typography.labelSmall, color = Accent, maxLines = 1)
+            Icon(Icons.Default.ChevronLeft, null, Modifier.size(14.dp), tint = Accent)
+        }
     }
+}
+
+/** نمایش جزئیات کامل یک مرحله (اجرای دستور/خواندن فایل و…) با کلیک روی آن. */
+@Composable
+private fun StepDetailDialog(s: TurnStep, onDismiss: () -> Unit) {
+    val statusText = when (s.status) {
+        StepStatus.RUNNING -> "در حال اجرا"
+        StepStatus.DONE -> "پایان‌یافته"
+        StepStatus.FAILED -> "ناموفق"
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(s.title) },
+        text = {
+            Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
+                SelectionContainer {
+                    Column {
+                        StepDetailLine("وضعیت", statusText)
+                        if (s.durationMs > 0) StepDetailLine("مدت", formatDuration(s.durationMs))
+                        if (s.context.isNotBlank()) StepDetailBlock("توضیح", s.context)
+                        if (s.args.isNotBlank()) StepDetailBlock("ورودی / دستور", s.args)
+                        if (s.result.isNotBlank()) StepDetailBlock("خروجی / نتیجه", s.result)
+                        if (s.args.isBlank() && s.result.isBlank() && s.context.isBlank()) {
+                            StepDetailBlock("جزئیات", s.detail.ifBlank { "جزئیات بیشتری ثبت نشده است." })
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("بستن") } },
+    )
+}
+
+@Composable
+private fun StepDetailLine(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = TextMid)
+        Spacer(Modifier.width(8.dp))
+        Text(value, style = MaterialTheme.typography.bodySmall, color = TextHi)
+    }
+}
+
+@Composable
+private fun StepDetailBlock(label: String, body: String) {
+    Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = Mint)
+        Spacer(Modifier.height(4.dp))
+        Box(
+            Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(Ink2.copy(alpha = 0.7f))
+                .padding(10.dp)
+        ) {
+            Text(
+                body,
+                style = MaterialTheme.typography.bodySmall,
+                color = TextMid,
+            )
+        }
+    }
+}
+
+private fun formatDuration(ms: Long): String {
+    val secs = ms / 1000.0
+    return if (secs < 1) "$ms میلی‌ثانیه" else "${String.format(Locale.US, "%.1f", secs)} ثانیه"
 }
 
 @Composable

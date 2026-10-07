@@ -80,6 +80,8 @@ private fun Root() {
     var loading by remember { mutableStateOf(true) }
     val status by HermesRepo.socket.status.collectAsState()
     var sid by remember { mutableStateOf("") }
+    // عنوان نشستی که در چت باز است؛ تا کاربر بداند کدام نشست را باز کرده.
+    var chatTitle by remember { mutableStateOf("") }
     // مدلی که کاربر انتخاب کرده؛ نشست‌های جدید با همین ساخته می‌شوند
     val selection by HermesRepo.settings.selection.collectAsState(initial = ModelSelection())
 
@@ -196,13 +198,14 @@ private fun Root() {
                         "hub" -> HubScreen(status, sid, "", onGo = { route = it })
                         "chat" -> ChatScreen(
                             engine = engine,
-                            title = "",
+                            title = chatTitle,
                             statusLive = status == RpcEvent.State.CONNECTED,
                             modelLabel = selection.model.ifBlank { "" },
                             onNewSession = {
                                 scope.launch {
                                     HermesRepo.createSession("گفت‌وگوی جدید")?.let { id ->
                                         sid = id
+                                        chatTitle = ""
                                         engine.resetForNewSession()
                                     }
                                 }
@@ -216,11 +219,21 @@ private fun Root() {
                                     val err = HermesRepo.applyModel(p, m, b)
                                     engine.resetForNewSession()
                                     sid = ""
+                                    chatTitle = ""
                                     if (err != null) engine.notice.value = err
                                 }
                             },
                         )
-                        "sessions" -> SessionsScreen({ route = "hub" }) { id -> HermesRepo.startSession(id); sid = id; route = "chat" }
+                        // انتخاب یک نشست: تاریخچهٔ همان نشست از سرور خوانده و
+                        // جای گفت‌وگوی فعلی نشان داده می‌شود؛ وگرنه چت همچنان
+                        // پیام‌های نشست قبلی را نگه می‌داشت و همهٔ نشست‌ها یکسان
+                        // به‌نظر می‌رسیدند.
+                        "sessions" -> SessionsScreen({ route = "hub" }) { id, title ->
+                            sid = id
+                            chatTitle = title
+                            route = "chat"
+                            scope.launch { engine.openSession(id) }
+                        }
                         "model" -> ModelScreen(
                             onBack = { route = "hub" },
                             // هر نشست هرمس مدلی را که با آن ساخته شده نگه می‌دارد؛

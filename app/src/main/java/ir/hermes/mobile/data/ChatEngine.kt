@@ -45,7 +45,21 @@ data class TurnStep(
     /** تعداد کاراکترهای انباشته (برای دلتاهای متن/بازاندیشی) */
     var chars: Long = 0,
     var rev: Long = 0,
-)
+    /** شناسهٔ ابزار در سرور، برای تطبیق tool.start با tool.complete */
+    var toolId: String = "",
+    /** توضیح کوتاهِ خوانا از سرور (مثل «خواندن فایل …» یا «اجرای دستور …») */
+    var context: String = "",
+    /** ورودی ابزار (JSON یا متن args) */
+    var args: String = "",
+    /** خروجی ابزار (نتیجهٔ اجرای دستور یا محتوای فایل) */
+    var result: String = "",
+    /** مدت اجرای ابزار به میلی‌ثانیه */
+    var durationMs: Long = 0,
+) {
+    /** آیا این مرحله جزئیاتی دارد که ارزش بازکردن داشته باشد؟ */
+    val openable: Boolean
+        get() = kind == "tool" || context.isNotBlank() || args.isNotBlank() || result.isNotBlank()
+}
 
 /**
  * موتور چت: رویدادهای WebSocket را به وضعیت قابل نمایش تبدیل می‌کند.
@@ -125,6 +139,49 @@ class ChatEngine {
     }
 
     /**
+     * بازکردن یک نشست ذخیره‌شده در چت: تاریخچهٔ آن از سرور خوانده و جای
+     * گفت‌وگوی فعلی نشان داده می‌شود.
+     *
+     * بدون این کار، کلیک روی هر نشست فقط شناسهٔ فعال را عوض می‌کرد و چت همچنان
+     * پیام‌های نشست قبلی را نشان می‌داد — یعنی به‌نظر می‌رسید هر نشست همان نشست
+     * فعال است.
+     */
+    suspend fun openSession(sid: String) {
+        messages.value = emptyList()
+        _steps.value = emptyList()
+        state.value = TurnState.IDLE
+        streaming.value = ""
+        notice.value = null
+        assistantMsg = null
+        if (sid.isBlank()) return
+        HermesRepo.history(sid).onSuccess { r ->
+            val list = J.listOf(J.obj(r), "messages", "items")
+                .mapNotNull { toMessage(J.obj(it)) }
+            messages.value = list
+        }
+    }
+
+    /** تبدیل یک پیام تاریخچهٔ سرور به [ChatMessage]. */
+    private fun toMessage(o: JsonObject): ChatMessage? {
+        val text = J.str(o, "text")
+        return when (J.str(o, "role")) {
+            "user" -> ChatMessage(newId(), MsgRole.USER, text)
+            "assistant" -> ChatMessage(
+                newId(), MsgRole.ASSISTANT, text,
+                reasoning = J.str(
+                    o, "reasoning",
+                    J.str(o, "reasoning_content", J.str(o, "thinking")),
+                ),
+            )
+            "tool" -> ChatMessage(newId(), MsgRole.TOOL).also {
+                it.tools.add(ToolRun(J.str(o, "name", "ابزار"), "پایان", J.str(o, "context")))
+            }
+            "system" -> ChatMessage(newId(), MsgRole.SYSTEM, text)
+            else -> null
+        }
+    }
+
+    /**
      * ارسال پیام. تا وقتی پاسخ JSON-RPC سرور خوانده نشود خبری از وضعیت نهایی نیست.
      * اگر سرور درخواست را رد کند (مثلاً نشست نامعتبر) بلافاصله خطا نمایش داده می‌شود
      * تا UI در «در حال فکر کردن» گیر نکند.
@@ -169,6 +226,10 @@ class ChatEngine {
         put("session_id", sid)
         put("text", text)
     }
+
+    /** کوتاه‌کردن متن‌های بلند (خروجی ابزار می‌تواند بسیار بزرگ باشد). */
+    private fun clamp(s: String, max: Int = 8000): String =
+        if (s.length <= max) s else s.take(max) + "\n… (ادامه بریده شد)"
 
     /** آیا خطای سرور یعنی «این نشست را نمی‌شناسم»؟ */
     private fun isStaleSession(msg: String?): Boolean {
@@ -253,22 +314,42 @@ class ChatEngine {
                 val m = assistantMsg ?: ChatMessage(newId(), MsgRole.ASSISTANT, pending = true)
                     .also { assistantMsg = it; messages.value = messages.value + it }
                 val toolName = J.str(p, "name", J.str(p, "tool", "ابزار"))
-                m.tools.add(ToolRun(toolName, "در حال اجرا"))
+                val toolId = J.str(p, "tool_id")
+                val ctx = J.str(p, "context", J.str(p, "detail"))
+                m.tools.add(ToolRun(toolName, "در حال اجرا", ctx))
                 state.value = TurnState.TOOL
                 touch(m)
-                addStep("tool", "ابزار: " + toolName, J.str(p, "detail"))
+                // مرحلهٔ ابزار با جزئیات کامل نگه داشته می‌شود تا کاربر با کلیک
+                // روی آن ببیند هرمس دقیقاً چه دستوری اجرا می‌کند یا چه فایلی
+                // می‌خواند.
+                val s = addStep("tool", "ابزار: " + toolName, ctx)
+                s.toolId = toolId
+                s.context = ctx
+                s.args = clamp(J.str(p, "args_text"))
+                touchStep(s)
             }
             "tool.complete", "tool.end" -> {
                 val name = J.str(p, "name", J.str(p, "tool"))
+                val toolId = J.str(p, "tool_id")
+                val summary = J.str(p, "summary")
                 val m = assistantMsg
-                m?.tools?.lastOrNull { it.name == name }?.let { it.status = "پایان"; it.detail = J.str(p, "summary") }
-                    ?: m?.tools?.lastOrNull()?.let { it.status = "پایان"; it.detail = J.str(p, "summary") }
+                m?.tools?.lastOrNull { it.name == name }?.let { it.status = "پایان"; it.detail = summary }
+                    ?: m?.tools?.lastOrNull()?.let { it.status = "پایان"; it.detail = summary }
                 touch(m)
-                // آخرین ابزار در حال اجرا را تمام‌شده کن
-                _steps.value.lastOrNull { it.kind == "tool" && it.status == StepStatus.RUNNING }?.let { s ->
-                    s.status = StepStatus.DONE
-                    if (s.detail.isBlank()) s.detail = J.str(p, "summary")
-                    touchStep(s)
+                // مرحلهٔ متناظر (اول با tool_id، وگرنه آخرین ابزار در حال اجرا)
+                val s = _steps.value.lastOrNull { it.kind == "tool" && it.toolId.isNotBlank() && it.toolId == toolId }
+                    ?: _steps.value.lastOrNull { it.kind == "tool" && it.status == StepStatus.RUNNING }
+                s?.let { st ->
+                    st.status = StepStatus.DONE
+                    if (summary.isNotBlank()) st.detail = summary
+                    st.durationMs = (J.num(p, "duration_s") * 1000).toLong()
+                    p["args"]?.let { st.args = clamp(J.pretty(it)) }
+                    val rt = J.str(p, "result_text")
+                    val out = if (rt.isNotBlank()) rt
+                    else p["result"]?.let { if (it is JsonPrimitive) it.content else J.pretty(it) } ?: ""
+                    if (out.isNotBlank()) st.result = clamp(out)
+                    if (st.context.isBlank()) st.context = J.str(p, "context")
+                    touchStep(st)
                 }
             }
             "tool.output_risk" -> {
