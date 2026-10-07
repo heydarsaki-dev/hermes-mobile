@@ -1,7 +1,10 @@
 package ir.hermes.mobile.data
 
 import ir.hermes.mobile.core.net.RpcEvent
+import ir.hermes.mobile.core.util.Jalali
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.*
 import java.util.concurrent.atomic.AtomicLong
 
@@ -23,6 +26,26 @@ data class ChatMessage(
 )
 
 enum class TurnState { IDLE, THINKING, STREAMING, TOOL, WAITING_APPROVAL, DONE, ERROR }
+
+enum class StepStatus { RUNNING, DONE, FAILED }
+
+/**
+ * یک مرحله از اجرای نوبت.
+ *
+ * برای نمایش زندهٔ «هرمس دارد چه‌کار می‌کند» نگه داشته می‌شود: فکر کردن،
+ * نوشتن پاسخ، هر ابزاری که اجرا می‌شود، انتظار تأیید، پایان یا خطا.
+ */
+data class TurnStep(
+    val id: Long,
+    val kind: String,
+    val title: String,
+    var detail: String = "",
+    var status: StepStatus = StepStatus.RUNNING,
+    val at: Long = System.currentTimeMillis(),
+    /** تعداد کاراکترهای انباشته (برای دلتاهای متن/بازاندیشی) */
+    var chars: Long = 0,
+    var rev: Long = 0,
+)
 
 /**
  * موتور چت: رویدادهای WebSocket را به وضعیت قابل نمایش تبدیل می‌کند.
@@ -58,6 +81,43 @@ class ChatEngine {
         list[i] = fresh
         messages.value = list
         if (assistantMsg?.id == fresh.id) assistantMsg = fresh
+    }
+
+    // ---------- مراحل اجرا (نمایش زندهٔ کار هرمس) ----------
+
+    private val _steps = MutableStateFlow<List<TurnStep>>(emptyList())
+    val steps: StateFlow<List<TurnStep>> = _steps.asStateFlow()
+    private var stepSeq = 0L
+
+    /** اعلام تغییر یک مرحله؛ مثل [touch] برای اینکه Compose تغییر را ببیند. */
+    private fun touchStep(s: TurnStep) {
+        val list = _steps.value.toMutableList()
+        val i = list.indexOfFirst { it.id == s.id }
+        if (i < 0) return
+        list[i] = s.copy(rev = s.rev + 1)
+        _steps.value = list
+    }
+
+    private fun addStep(
+        kind: String,
+        title: String,
+        detail: String = "",
+        status: StepStatus = StepStatus.RUNNING,
+    ): TurnStep {
+        val s = TurnStep(++stepSeq, kind, title, detail, status)
+        _steps.value = _steps.value + s
+        return s
+    }
+
+    /** آخرین مرحلهٔ در حال اجرا از این نوع، یا ساخت مرحلهٔ تازه. */
+    private fun step(kind: String, title: String): TurnStep =
+        _steps.value.lastOrNull { it.kind == kind && it.status == StepStatus.RUNNING }
+            ?: addStep(kind, title)
+
+    private fun finishSteps(status: StepStatus = StepStatus.DONE) {
+        _steps.value = _steps.value.map {
+            if (it.status == StepStatus.RUNNING) it.copy(status = status, rev = it.rev + 1) else it
+        }
     }
 
     fun loadHistory(items: List<ChatMessage>) {
@@ -120,6 +180,8 @@ class ChatEngine {
     private fun fail(msg: String) {
         state.value = TurnState.ERROR
         streaming.value = ""
+        finishSteps(StepStatus.FAILED)
+        addStep("error", "خطا", msg, StepStatus.FAILED)
         val m = ChatMessage(newId(), MsgRole.ASSISTANT)
         m.error = msg
         messages.value = messages.value + m
@@ -133,10 +195,13 @@ class ChatEngine {
         streaming.value = ""
         notice.value = null
         assistantMsg = null
+        _steps.value = emptyList()
     }
 
     fun interrupt() {
         HermesRepo.socket.interrupt()
+        finishSteps(StepStatus.DONE)
+        addStep("turn", "متوقف شد", "", StepStatus.DONE)
         state.value = TurnState.DONE
         streaming.value = ""
     }
@@ -147,6 +212,8 @@ class ChatEngine {
             "gateway.ready" -> notice.value = "دروازه آماده است"
             "turn.start" -> {
                 state.value = TurnState.THINKING
+                _steps.value = emptyList()
+                addStep("think", "آماده‌سازی نوبت")
                 assistantMsg = ChatMessage(newId(), MsgRole.ASSISTANT, pending = true).also {
                     messages.value = messages.value + it
                 }
@@ -161,6 +228,11 @@ class ChatEngine {
                     streaming.value = m.text
                     state.value = TurnState.STREAMING
                     touch(m)
+                    // مرحلهٔ «نوشتن پاسخ» با شمار کاراکترهای دریافتی
+                    val s = step("write", "نوشتن پاسخ")
+                    s.chars += t.length
+                    s.detail = Jalali.fa(s.chars) + " کاراکتر"
+                    touchStep(s)
                 }
             }
             "reasoning.delta", "thinking.delta" -> {
@@ -170,14 +242,21 @@ class ChatEngine {
                         .also { assistantMsg = it; messages.value = messages.value + it }
                     m.reasoning += t
                     touch(m)
+                    // مرحلهٔ «فکر کردن» با شمار کاراکترهای بازاندیشی
+                    val s = step("think", "فکر کردن")
+                    s.chars += t.length
+                    s.detail = Jalali.fa(s.chars) + " کاراکتر"
+                    touchStep(s)
                 }
             }
             "tool.start" -> {
                 val m = assistantMsg ?: ChatMessage(newId(), MsgRole.ASSISTANT, pending = true)
                     .also { assistantMsg = it; messages.value = messages.value + it }
-                m.tools.add(ToolRun(J.str(p, "name", J.str(p, "tool", "ابزار")), "در حال اجرا"))
+                val toolName = J.str(p, "name", J.str(p, "tool", "ابزار"))
+                m.tools.add(ToolRun(toolName, "در حال اجرا"))
                 state.value = TurnState.TOOL
                 touch(m)
+                addStep("tool", "ابزار: " + toolName, J.str(p, "detail"))
             }
             "tool.complete", "tool.end" -> {
                 val name = J.str(p, "name", J.str(p, "tool"))
@@ -185,6 +264,12 @@ class ChatEngine {
                 m?.tools?.lastOrNull { it.name == name }?.let { it.status = "پایان"; it.detail = J.str(p, "summary") }
                     ?: m?.tools?.lastOrNull()?.let { it.status = "پایان"; it.detail = J.str(p, "summary") }
                 touch(m)
+                // آخرین ابزار در حال اجرا را تمام‌شده کن
+                _steps.value.lastOrNull { it.kind == "tool" && it.status == StepStatus.RUNNING }?.let { s ->
+                    s.status = StepStatus.DONE
+                    if (s.detail.isBlank()) s.detail = J.str(p, "summary")
+                    touchStep(s)
+                }
             }
             "tool.output_risk" -> {
                 assistantMsg?.tools?.lastOrNull()?.let {
@@ -192,10 +277,12 @@ class ChatEngine {
                 }
                 state.value = TurnState.WAITING_APPROVAL
                 touch(assistantMsg)
+                addStep("approve", "نیازمند تأیید", J.str(p, "reason"), StepStatus.RUNNING)
             }
             "approval.request" -> {
                 notice.value = "تأیید عملیات توسط سرور درخواست شد"
                 state.value = TurnState.WAITING_APPROVAL
+                addStep("approve", "درخواست تأیید از سرور", J.str(p, "reason"))
             }
             "message.complete", "turn.complete" -> {
                 val pt = J.str(p, "text")
@@ -209,6 +296,13 @@ class ChatEngine {
                         ChatMessage(newId(), MsgRole.ASSISTANT, if (pt.isNotEmpty()) pt else streaming.value)
                 }
                 if (J.str(p, "status") == "error") notice.value = pt.ifBlank { "خطا در اجرای نوبت" }
+                finishSteps(if (J.str(p, "status") == "error") StepStatus.FAILED else StepStatus.DONE)
+                addStep(
+                    "turn",
+                    if (J.str(p, "status") == "error") "پایان با خطا" else "پایان نوبت",
+                    "",
+                    if (J.str(p, "status") == "error") StepStatus.FAILED else StepStatus.DONE,
+                )
                 state.value = TurnState.DONE
                 streaming.value = ""
                 assistantMsg = null
@@ -221,6 +315,8 @@ class ChatEngine {
                 notice.value = if (low.contains("timed out") || low.contains("initializ")) {
                     "راهنما: اتصال پرووایدر سفارشی را با دکمهٔ «تست» بررسی کنید و از «تنظیمات → لاگ سرور هرمس» دلیل دقیق را ببینید."
                 } else if (cur == null) msg else null
+                finishSteps(StepStatus.FAILED)
+                addStep("error", "خطا", msg, StepStatus.FAILED)
                 state.value = TurnState.ERROR
                 streaming.value = ""
                 assistantMsg = null

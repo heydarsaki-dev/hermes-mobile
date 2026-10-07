@@ -32,7 +32,9 @@ import ir.hermes.mobile.data.ChatEngine
 import ir.hermes.mobile.data.HermesRepo
 import ir.hermes.mobile.data.J
 import ir.hermes.mobile.data.MsgRole
+import ir.hermes.mobile.data.StepStatus
 import ir.hermes.mobile.data.TurnState
+import ir.hermes.mobile.data.TurnStep
 import ir.hermes.mobile.ui.components.*
 import ir.hermes.mobile.ui.theme.*
 import kotlinx.coroutines.launch
@@ -56,12 +58,21 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
     val msgs by engine.messages.collectAsState()
+    val steps by engine.steps.collectAsState()
     val st by engine.state.collectAsState()
     val notice by engine.notice.collectAsState()
-    val busy = st == TurnState.THINKING || st == TurnState.STREAMING || st == TurnState.TOOL
+    // «فعال» یعنی هرمس مشغول است. قبلاً فقط THINKING نشانگر داشت، پس وقتی هدر
+    // «در حال نوشتن» می‌شد هیچ لودری پایین دیده نمی‌شد — اینجا همهٔ حالت‌ها پوشش
+    // داده می‌شوند.
+    val busy = st == TurnState.THINKING || st == TurnState.STREAMING ||
+        st == TurnState.TOOL || st == TurnState.WAITING_APPROVAL
 
-    LaunchedEffect(msgs.size, msgs.lastOrNull()?.text?.length) {
-        if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1)
+    LaunchedEffect(msgs.size, msgs.lastOrNull()?.text?.length, steps.size, steps.lastOrNull()?.rev) {
+        if (msgs.isNotEmpty()) {
+            // آخرین آیتم پنل مراحل است، پس در حال اجرا یکی بعد از پیام‌ها می‌رویم
+            val last = if (busy || steps.isNotEmpty()) msgs.size else msgs.size - 1
+            listState.animateScrollToItem(last.coerceAtLeast(0))
+        }
     }
 
     // اگر نوبتی بیش از حد طول بکشد، اپ نباید بی‌صدا در «در حال فکر کردن» بماند.
@@ -202,7 +213,9 @@ fun ChatScreen(
                 item { WelcomeCard(onSuggestion = { input = it }) }
             }
             items(msgs, key = { it.id }) { MessageCard(it) }
-            if (st == TurnState.THINKING) item { ThinkingDots() }
+            // اگر مرحله‌ای ثبت نشده بود، حداقل نشانگر متحرک را نشان بده
+            if (busy && steps.isEmpty()) item("dots") { ThinkingDots() }
+            if (steps.isNotEmpty()) item("steps") { ActivityPanel(steps, busy) }
         }
     }
 
@@ -366,6 +379,58 @@ private fun WelcomeCard(onSuggestion: (String) -> Unit) {
                 Icon(Icons.Default.AutoAwesome, null, Modifier.size(15.dp), tint = Gold)
                 Spacer(Modifier.width(8.dp))
                 Text(it, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+/**
+ * نمایش زندهٔ مرحله‌به‌مرحلهٔ کار هرمس: آماده‌سازی، فکر کردن، هر ابزار،
+ * انتظار تأیید، نوشتن پاسخ و پایان/خطا.
+ */
+@Composable
+private fun ActivityPanel(steps: List<TurnStep>, busy: Boolean) {
+    GlassCard(
+        Modifier.fillMaxWidth(),
+        borderColor = Accent.copy(alpha = if (busy) 0.45f else 0.18f),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (busy) {
+                CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 2.dp, color = Accent)
+            } else {
+                Icon(Icons.Default.CheckCircle, null, Modifier.size(14.dp), tint = Lime)
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (busy) "هرمس در حال کار است…" else "مراحل اجرای نوبت اخیر",
+                style = MaterialTheme.typography.labelLarge,
+                color = if (busy) Accent else TextMid,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        steps.forEach { s -> StepRow(s) }
+    }
+}
+
+@Composable
+private fun StepRow(s: TurnStep) {
+    val c = when (s.status) {
+        StepStatus.RUNNING -> Accent
+        StepStatus.DONE -> Lime
+        StepStatus.FAILED -> Rose
+    }
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.Top) {
+        when (s.status) {
+            StepStatus.RUNNING ->
+                CircularProgressIndicator(Modifier.padding(top = 3.dp).size(11.dp), strokeWidth = 2.dp, color = c)
+            StepStatus.DONE -> Icon(Icons.Default.Check, null, Modifier.size(13.dp), tint = c)
+            StepStatus.FAILED -> Icon(Icons.Default.Close, null, Modifier.size(13.dp), tint = c)
+        }
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(s.title, style = MaterialTheme.typography.bodySmall, color = TextHi, maxLines = 2)
+            if (s.detail.isNotBlank()) {
+                Text(s.detail, style = MaterialTheme.typography.labelSmall, color = TextLow, maxLines = 3)
             }
         }
     }
