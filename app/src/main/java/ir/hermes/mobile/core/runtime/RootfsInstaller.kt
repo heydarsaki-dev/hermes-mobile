@@ -71,6 +71,14 @@ object RootfsInstaller {
         "signals.py", "suite.py", "util.py",
     )
 
+    /** خط یگانهٔ سقف انتظار ساخت ایجنت در `tui_gateway/server.py` هرمس ۰.۱۹.۰ */
+    private const val AGENT_WAIT_OLD =
+        "def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:"
+
+    /** همان خط با سقف ۳۰۰ ثانیه — ساخت ایجنت روی گوشی چند دقیقه طول می‌کشد */
+    private const val AGENT_WAIT_NEW =
+        "def _wait_agent(session: dict, rid: str, timeout: float = 300.0) -> dict | None:"
+
     fun rootfsDir(ctx: Context): File = File(ctx.filesDir, "runtime/rootfs")
     fun binDir(ctx: Context): File = File(ctx.filesDir, "runtime/bin")
     fun libDir(ctx: Context): File = File(ctx.filesDir, "runtime/lib")
@@ -97,20 +105,30 @@ object RootfsInstaller {
     }
 
     /**
-     * ترمیم کتابخانهٔ استاندارد پایتون در rootfs.
+     * ترمیم اجرای هرمس داخل rootfs.
      *
-     * در rootfs منتشرشده، پکیج `unittest` از کتابخانهٔ استاندارد حذف شده بود؛ اما
-     * هرمس ۰.۱۹.۰ در زمان اجرا و دقیقاً در مسیر استریم پاسخ
-     * `from unittest.mock import Mock` می‌زند (`agent/conversation_loop.py` و
-     * `run_agent.py`). نتیجه این بود که هر نوبت چت با خطای
-     * «Streaming failed before delivery: No module named 'unittest'» شکست می‌خورد.
+     * دو ترمیم انجام می‌شود:
+     *  ۱. برگرداندن پکیج `unittest` که از کتابخانهٔ استاندارد پایتون حذف شده بود.
+     *  ۲. افزایش سقف انتظار آماده‌شدن ایجنت از ۳۰ به ۳۰۰ ثانیه.
      *
-     * همان فایل‌های اصلی پایتون ۳.۱۲.۳ از داخل APK به stdlib مهمان برگردانده
-     * می‌شوند. چون از [HermesRuntime.start] هم صدا زده می‌شود، نصب‌های قدیمی هم
-     * خودترمیم می‌شوند و نیازی به دانلود دوبارهٔ ۷۶ مگابایتی rootfs نیست.
+     * چون از [HermesRuntime.start] هم صدا زده می‌شود، نصب‌های قدیمی هم خودترمیم
+     * می‌شوند و نیازی به دانلود دوبارهٔ ۷۶ مگابایتی rootfs نیست.
      */
     @JvmStatic
     fun ensurePythonPatches(ctx: Context) {
+        ensureUnittest(ctx)
+        patchAgentWaitTimeout(ctx)
+    }
+
+    /**
+     * برگرداندن پکیج `unittest` به کتابخانهٔ استاندارد پایتون مهمان.
+     *
+     * هرمس ۰.۱۹.۰ در زمان اجرا و دقیقاً در مسیر استریم پاسخ
+     * `from unittest.mock import Mock` می‌زند (`agent/conversation_loop.py` و
+     * `run_agent.py`)؛ بدون این پکیج هر نوبت چت با خطای
+     * «Streaming failed before delivery: No module named 'unittest'» شکست می‌خورد.
+     */
+    private fun ensureUnittest(ctx: Context) {
         val stdlib = pythonStdlibDir(ctx) ?: return
         val dst = File(stdlib, "unittest")
         // اگر از قبل سالم است، کاری نکن (این مسیر در هر اجرای اپ چک می‌شود)
@@ -140,6 +158,43 @@ object RootfsInstaller {
             .listFiles { f -> f.isDirectory && f.name.startsWith("python3.") }
             ?: return null
         return dirs.firstOrNull { File(it, "os.py").exists() } ?: dirs.firstOrNull()
+    }
+
+    /**
+     * افزایش سقف انتظار آماده‌شدن ایجنت در ترمینال‌گیت‌وی هرمس.
+     *
+     * پیش از نخستین نوبت، هرمس ساخت ایجنت را در ترد دیگری آغاز می‌کند و با سقف
+     * سخت ۳۰ ثانیه منتظر آن می‌ماند (`_wait_agent` در `tui_gateway/server.py`).
+     * روی گوشی این ساخت (کشف ابزارها، نصب تنبل، و probe پرووایدر) راحت از ۳۰
+     * ثانیه می‌گذرد؛ نتیجه رویداد «agent initialization timed out» بود، نوبت دور
+     * می‌افتاد (`session["running"] = False`) و چت بی‌پاسخ روی «خطا» می‌ماند.
+     *
+     * جایگزینی متنی عمدی است: این خط در کل فایل یگانه است و اگر پیدا نشد
+     * (نسخهٔ دیگر هرمس) فایل دست‌نخورده می‌ماند تا چیزی خراب نشود.
+     */
+    private fun patchAgentWaitTimeout(ctx: Context) {
+        val server = File(hermesSitePackages(ctx) ?: return, "tui_gateway/server.py")
+        if (!server.exists()) return
+        try {
+            val txt = server.readText()
+            // قبلاً وصله شده یا نسخهٔ ناشناخته → دست نزن
+            if (txt.contains(AGENT_WAIT_NEW) || !txt.contains(AGENT_WAIT_OLD)) return
+            server.writeText(txt.replace(AGENT_WAIT_OLD, AGENT_WAIT_NEW))
+            // بایت‌کد کش‌شده بی‌اعتبار شود تا پایتون نسخهٔ قدیمی را اجرا نکند
+            runCatching { File(server.parentFile, "__pycache__/server.cpython-312.pyc").delete() }
+            CrashLogger.breadcrumb("ترمیم مهلت آماده‌شدن ایجنت هرمس (۳۰ → ۳۰۰ ثانیه)")
+        } catch (t: Throwable) {
+            CrashLogger.breadcrumb("ترمیم مهلت آماده‌شدن ایجنت ناموفق: ${t.message}")
+        }
+    }
+
+    /** پوشهٔ site-packages داخل venv هرمس (`opt/hermes-venv/lib/python3.x/site-packages`) */
+    private fun hermesSitePackages(ctx: Context): File? {
+        val lib = File(rootfsDir(ctx), "opt/hermes-venv/lib")
+        val dirs = lib.listFiles { f -> f.isDirectory && f.name.startsWith("python3.") }
+            ?: return null
+        val venvLib = dirs.firstOrNull { File(it, "site-packages/agent").exists() } ?: dirs.firstOrNull()
+        return venvLib?.let { File(it, "site-packages") }
     }
 
     fun hasEnoughFreeSpace(): Boolean = try {

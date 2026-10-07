@@ -104,8 +104,8 @@ object HermesRuntime {
             return
         }
 
-        // خودترمیمی rootfs: اگر پکیج unittest پایتون حذف شده باشد برگردانده می‌شود؛
-        // وگرنه هر نوبت چت با «No module named 'unittest'» شکست می‌خورد
+        // خودترمیمی rootfs: برگرداندن پکیج unittest و افزایش سقف انتظار آماده‌شدن
+        // ایجنت (۳۰ → ۳۰۰ ثانیه)؛ بدون این‌ها چت با خطا/بی‌پاسخ می‌ماند
         runCatching { RootfsInstaller.ensurePythonPatches(app) }
 
         val token = generateToken()
