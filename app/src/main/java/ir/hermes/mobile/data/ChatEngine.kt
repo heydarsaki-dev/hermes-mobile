@@ -320,7 +320,12 @@ class ChatEngine {
             }
             "message.delta", "assistant.delta", "text.delta" -> {
                 val t = J.str(p, "text")
-                if (t.isNotEmpty()) {
+                if (t.isEmpty()) {
+                    // مرزِ پایان یک قطعهٔ استريم: سرور برای «بستن جعبهٔ پاسخ»
+                    // (مثلاً پیش از اجرای ابزار) یک دلتای خالی/None می‌فرستد.
+                    // حباب فعلی بسته می‌شود تا متن بعدی در حباب تازه بیاید.
+                    sealAssistant()
+                } else {
                     val m = assistantMsg ?: ChatMessage(newId(), MsgRole.ASSISTANT, pending = true)
                         .also { assistantMsg = it; messages.value = messages.value + it }
                     m.text += t
@@ -347,6 +352,17 @@ class ChatEngine {
                     s.detail = Jalali.fa(s.chars) + " کاراکتر"
                     touchStep(s)
                 }
+            }
+            // مدل شروع به ساختن آرگومان‌های ابزار کرده است (مثلاً بدنهٔ یک
+            // write_file بزرگ). همین‌جا حباب توضیح بسته می‌شود تا در طول ساخت
+            // دستور هم متن‌ها به‌هم نچسبند — نه فقط در لحظهٔ tool.start.
+            "tool.generating" -> {
+                sealAssistant()
+                val name = J.str(p, "name")
+                val title = "آماده‌سازی: " + name
+                if (name.isNotBlank() &&
+                    _steps.value.none { it.kind == "toolgen" && it.title == title && it.status == StepStatus.RUNNING }
+                ) addStep("toolgen", title)
             }
             "tool.start" -> {
                 val toolName = J.str(p, "name", J.str(p, "tool", "ابزار"))
