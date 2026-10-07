@@ -79,6 +79,27 @@ object RootfsInstaller {
     private const val AGENT_WAIT_NEW =
         "def _wait_agent(session: dict, rid: str, timeout: float = 300.0) -> dict | None:"
 
+    /**
+     * الگوی فیلتر محتوای پرووایدر که هرمس ۰.۱۹.۰ نمی‌شناسد.
+     *
+     * برخی پرووایدرها درخواست را با پیام «The request contains sensitive
+     * content. Please modify your input and try again.» رد می‌کنند. هرمس این را
+     * در دستهٔ ناشناخته می‌گذارد، سه بار دوباره تلاش می‌کند و در پایان خطای
+     * خام «API call failed after 3 retries: …» را نشان می‌دهد — درحالی‌که این
+     * رد قطعیِ همان درخواست است و تلاش دوباره فقط اعتبار مصرف می‌کند.
+     * با افزودن این عبارت به فهرست `_CONTENT_POLICY_BLOCKED_PATTERNS`، هرمس
+     * آن را «فیلتر محتوا» می‌شناسد: بدون تلاش دوباره، با پیام راهنما و در
+     * صورت وجود، با سوییچ به مدل جانشین.
+     */
+    private const val CONTENT_POLICY_OLD = "    \"new_sensitive\",\n]"
+
+    private const val CONTENT_POLICY_NEW =
+        "    \"new_sensitive\",\n" +
+            "    # Hermes Mobile: provider safety filter (\"contains sensitive content\")\n" +
+            "    \"contains sensitive content\",\n" +
+            "    \"sensitive content\",\n" +
+            "]"
+
     fun rootfsDir(ctx: Context): File = File(ctx.filesDir, "runtime/rootfs")
     fun binDir(ctx: Context): File = File(ctx.filesDir, "runtime/bin")
     fun libDir(ctx: Context): File = File(ctx.filesDir, "runtime/lib")
@@ -118,6 +139,7 @@ object RootfsInstaller {
     fun ensurePythonPatches(ctx: Context) {
         ensureUnittest(ctx)
         patchAgentWaitTimeout(ctx)
+        patchContentPolicyPatterns(ctx)
     }
 
     /**
@@ -185,6 +207,32 @@ object RootfsInstaller {
             CrashLogger.breadcrumb("ترمیم مهلت آماده‌شدن ایجنت هرمس (۳۰ → ۳۰۰ ثانیه)")
         } catch (t: Throwable) {
             CrashLogger.breadcrumb("ترمیم مهلت آماده‌شدن ایجنت ناموفق: ${t.message}")
+        }
+    }
+
+    /**
+     * افزودن الگوی رد «محتوا حساس است» به دستهٔ فیلتر محتوای هرمس.
+     *
+     * بدون این ترمیم، هرمس پیام پرووایدر را ناشناخته می‌بیند، سه بار دوباره
+     * تلاش می‌کند و در پایان `API call failed after 3 retries: The request
+     * contains sensitive content…` را نشان می‌دهد. با این ترمیم، همان پیام
+     * قطعی و بدون تلاش دوباره با راهنمای اقدام (بازنویسی درخواست/مدل جانشین)
+     * نمایش داده می‌شود.
+     */
+    private fun patchContentPolicyPatterns(ctx: Context) {
+        val file = File(hermesSitePackages(ctx) ?: return, "agent/error_classifier.py")
+        if (!file.exists()) return
+        try {
+            val txt = file.readText()
+            // قبلاً وصله شده یا ساختار عوض شده → دست نزن
+            if (txt.contains("contains sensitive content") || !txt.contains(CONTENT_POLICY_OLD)) return
+            file.writeText(txt.replace(CONTENT_POLICY_OLD, CONTENT_POLICY_NEW))
+            runCatching {
+                File(file.parentFile, "__pycache__/error_classifier.cpython-312.pyc").delete()
+            }
+            CrashLogger.breadcrumb("ترمیم دستهٔ فیلتر محتوای هرمس (sensitive content)")
+        } catch (t: Throwable) {
+            CrashLogger.breadcrumb("ترمیم فیلتر محتوای هرمس ناموفق: ${t.message}")
         }
     }
 

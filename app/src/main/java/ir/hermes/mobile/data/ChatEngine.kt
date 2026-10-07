@@ -434,12 +434,26 @@ class ChatEngine {
             }
             "turn.error", "error" -> {
                 val msg = J.str(p, "message", J.str(p, "error", "خطای نامشخص"))
-                val cur = assistantMsg
-                if (cur != null) { cur.pending = false; cur.error = msg }
                 val low = msg.lowercase()
-                notice.value = if (low.contains("timed out") || low.contains("initializ")) {
-                    "راهنما: اتصال پرووایدر سفارشی را با دکمهٔ «تست» بررسی کنید و از «تنظیمات → لاگ سرور هرمس» دلیل دقیق را ببینید."
-                } else if (cur == null) msg else null
+                // رد درخواست به‌دلیل فیلتر محتوای پرووایدر: قطعی است و با تغییر
+                // متن یا مدل حل می‌شود؛ پس به‌جای خطای خام انگلیسی راهنمای
+                // فارسی نشان می‌دهیم.
+                val policyBlocked = low.contains("sensitive content") ||
+                    low.contains("safety filter") || low.contains("content_filter") ||
+                    low.contains("content policy") || low.contains("usage policies")
+                val friendly = if (policyBlocked) {
+                    "فیلتر محتوای پرووایدر این درخواست را رد کرد (خطای هرمس نیست). " +
+                        "متن را ساده‌تر بازنویسی کنید یا از صفحهٔ مدل یک مدل/پرووایدر دیگر انتخاب کنید."
+                } else null
+                val cur = assistantMsg
+                if (cur != null) { cur.pending = false; cur.error = friendly ?: msg }
+                notice.value = when {
+                    friendly != null -> friendly
+                    low.contains("timed out") || low.contains("initializ") ->
+                        "راهنما: اتصال پرووایدر سفارشی را با دکمهٔ «تست» بررسی کنید و از «تنظیمات → لاگ سرور هرمس» دلیل دقیق را ببینید."
+                    cur == null -> msg
+                    else -> null
+                }
                 finishSteps(StepStatus.FAILED)
                 addStep("error", "خطا", msg, StepStatus.FAILED)
                 state.value = TurnState.ERROR
