@@ -584,7 +584,11 @@ private fun MessageCard(m: ir.hermes.mobile.data.ChatMessage) {
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            if (isUser) "شما" else "هرمس",
+            when (m.role) {
+                MsgRole.USER -> "شما"
+                MsgRole.TOOL -> "ابزار"
+                else -> "هرمس"
+            },
             style = MaterialTheme.typography.labelSmall,
             color = TextLow,
             modifier = Modifier.padding(horizontal = 6.dp),
