@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -129,6 +130,25 @@ fun ErrorBanner(msg: String, onRetry: (() -> Unit)? = null) {
         if (onRetry != null) {
             Spacer(Modifier.width(8.dp))
             TextButton(onClick = onRetry) { Text("تلاش دوباره", color = Rose) }
+        }
+    }
+}
+
+@Composable
+fun SuccessBanner(msg: String, onDismiss: (() -> Unit)? = null) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = 10.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Lime.copy(alpha = 0.12f))
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(msg, Modifier.weight(1f), color = Lime, style = MaterialTheme.typography.bodySmall)
+        if (onDismiss != null) {
+            Spacer(Modifier.width(8.dp))
+            IconButton(onClick = onDismiss, modifier = Modifier.size(22.dp)) {
+                Icon(Icons.Default.Close, "بستن", Modifier.size(14.dp), tint = Lime)
+            }
         }
     }
 }

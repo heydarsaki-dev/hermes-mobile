@@ -407,15 +407,24 @@ object HermesRepo {
     })
 
     // ---------- کرون ----------
+    // پروتکل سرور (cron.manage) فقط این action‌ها را می‌پذیرد:
+    //   list / add / remove / pause / resume
+    // شناسهٔ کار با کلید `name` فرستاده می‌شود (سرور آن را به job_id تفسیر می‌کند).
     suspend fun cronList(): Result<JsonElement> = rpc("cron.manage", buildJsonObject { put("action", "list") })
 
     suspend fun cronCreate(name: String, schedule: String, prompt: String): Result<JsonElement> =
         rpc("cron.manage", buildJsonObject {
-            put("action", "create"); put("name", name); put("schedule", schedule); put("prompt", prompt)
+            put("action", "add"); put("name", name); put("schedule", schedule); put("prompt", prompt)
         })
 
-    suspend fun cronDelete(name: String): Result<JsonElement> =
-        rpc("cron.manage", buildJsonObject { put("action", "delete"); put("name", name) })
+    suspend fun cronRemove(jobId: String): Result<JsonElement> =
+        rpc("cron.manage", buildJsonObject { put("action", "remove"); put("name", jobId) })
+
+    suspend fun cronPause(jobId: String): Result<JsonElement> =
+        rpc("cron.manage", buildJsonObject { put("action", "pause"); put("name", jobId) })
+
+    suspend fun cronResume(jobId: String): Result<JsonElement> =
+        rpc("cron.manage", buildJsonObject { put("action", "resume"); put("name", jobId) })
 
     // ---------- اجرای فرمان ----------
     suspend fun shell(cmd: String): Result<JsonElement> =
