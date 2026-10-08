@@ -152,7 +152,16 @@ class HermesSocket(
         socket?.send(msg.toString())
     }
 
-    fun interrupt() {
+    /**
+     * متوقف کردن یک نشست.
+     *
+     * `sessionId` پیش‌فرض نشستِ جاری است؛ ولی می‌توان نشستِ دیگری را هم
+     * متوقف کرد. این برای حذفِ نشست لازم است: هرمس حذفِ نشستِ *فعال* را
+     * رد می‌کند، پس اول باید آن نشست با `session.interrupt` متوقف شود.
+     * اگر نشستی فعال نباشد، فرستادن این درخواست بی‌ضرر است.
+     */
+    fun interrupt(sessionId: String = this.sessionId) {
+        if (sessionId.isBlank()) return
         val msg = buildJsonObject {
             put("jsonrpc", "2.0"); put("id", ids.incrementAndGet().toString())
             put("method", "session.interrupt")

@@ -1,6 +1,10 @@
 package ir.hermes.mobile.ui.chat
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.background
@@ -60,6 +64,11 @@ fun ChatScreen(
     val msgs by engine.messages.collectAsState()
     val st by engine.state.collectAsState()
     val notice by engine.notice.collectAsState()
+    // «منتظر» یعنی نوبت شروع شده ولی هنوز هیچ نشانهٔ بصری‌ای (بازاندیشی،
+    // متن، یا ابزار) نیامده. این پرچمِ تک‌نوبتی است و برخلافِ بررسیِ کلِ
+    // لیست، بعد از اولین پاسخ هم درست کار می‌کند: قبلاً بعد از یک پاسخ،
+    // لیست همیشه حاوی پیامِ دستیار بود و اسپینر دیگر نشان داده نمی‌شد.
+    val waiting by engine.waiting.collectAsState()
     // «فعال» یعنی هرمس مشغول است. قبلاً فقط THINKING نشانگر داشت، پس وقتی هدر
     // «در حال نوشتن» می‌شد هیچ لودری پایین دیده نمی‌شد — اینجا همهٔ حالت‌ها پوشش
     // داده می‌شوند.
@@ -221,12 +230,11 @@ fun ChatScreen(
                     item { WelcomeCard(onSuggestion = { input = it }) }
                 }
                 items(msgs, key = { it.id }) { MessageCard(it) }
-                // در حال کار است ولی هنوز هیچ خروجی‌ای نیامده: فقط نقاط متحرک.
+                // در حال کار است ولی هنوز هیچ خروجیِ بصری‌ای نیامده: یک اسپینر.
                 // ابزارهای در حال اجرا خودشان ردیفِ «در حال اجرا» با اسپینر
-                // می‌سازند، پس در آن حالت نقاط اضافی نشان داده نمی‌شود.
-                if (busy && msgs.none {
-                        it.role == MsgRole.ASSISTANT && (it.text.isNotBlank() || it.reasoning.isNotBlank() || it.tools.isNotEmpty())
-                    }) {
+                // می‌سازند، پس در آن حالت اسپینرِ اضافی نشان داده نمی‌شود
+                // (`waiting` با شروعِ ابزار `false` می‌شود).
+                if (busy && waiting) {
                     item("dots") { ThinkingDots() }
                 }
             }
@@ -414,23 +422,25 @@ private fun WelcomeCard(onSuggestion: (String) -> Unit) {
 
 @Composable
 private fun ThinkingDots() {
+    // وقتی پیامی فرستاده می‌شود و هنوز هیچ خروجی‌ای نیامده، این نشانگر
+    // نمایش داده می‌شود. یک پیلِ شیشه‌ایِ کوچک با اسپینر و برچسبِ فارسی.
     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.Center) {
         Row(
             Modifier.clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.surfaceVariant)
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            repeat(3) { i ->
-                val a = rememberInfiniteTransition(label = "d$i")
-                val alpha by a.animateFloat(
-                    0.3f, 1f,
-                    androidx.compose.animation.core.infiniteRepeatable(
-                        androidx.compose.animation.core.tween(600, delayMillis = i * 180),
-                        androidx.compose.animation.core.RepeatMode.Reverse,
-                    ), label = "a$i"
-                )
-                Box(Modifier.padding(horizontal = 3.dp).size(6.dp).clip(CircleShape).background(Gold.copy(alpha = alpha)))
-            }
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = Gold,
+            )
+            Text(
+                "در حال فکر کردن…",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -621,12 +631,16 @@ private fun activityItems(m: ir.hermes.mobile.data.ChatMessage): List<ActivityIt
  * ورودی و خروجیِ ابزار هم استفاده می‌شود تا همیشه چیزی برای دیدن باشد.
  */
 private fun toolDetailText(t: ir.hermes.mobile.data.ToolRun): String = buildString {
-    if (t.detail.isNotBlank()) {
-        append(t.detail)
+    // توضیحِ کوتاهِ کار (context) همیشه کامل نشان داده می‌شود. این مهم‌ترین
+    // بخش برای کاربر است: «اجرای دستور: ls -la» یا «خواندن فایل …». قبلاً اگر
+    // با summary برابر بود، حذف می‌شد و کاربر بعد از اکسپند کردن چیزی تازه‌ای
+    // نمی‌دید — دقیقاً همان «متن کامل دستور نشون داده نمیشه».
+    if (t.context.isNotBlank()) {
+        append(t.context)
         append("\n\n")
     }
-    if (t.context.isNotBlank() && t.context != t.detail) {
-        append(t.context)
+    if (t.detail.isNotBlank() && t.detail != t.context) {
+        append(t.detail)
         append("\n\n")
     }
     if (t.args.isNotBlank()) {
@@ -683,13 +697,24 @@ private fun ActivityRow(a: ActivityItem) {
                 )
             }
         }
-        AnimatedVisibility(open) {
-            Text(
-                a.detail,
-                Modifier.fillMaxWidth().padding(top = 5.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = TextMid,
-            )
+        AnimatedVisibility(open, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+            // خروجیِ ابزار می‌تواند بسیار طولانی باشد (مثلاً خروجیِ ترمینال).
+            // بدون سقف و اسکرول، حباب کل صفحه را می‌گرفت و خواندن سخت می‌شد.
+            Column(
+                Modifier.fillMaxWidth().padding(top = 5.dp)
+                    .heightIn(max = 260.dp)
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(Color.Black.copy(alpha = 0.22f))
+                    .verticalScroll(rememberScrollState())
+                    .padding(8.dp),
+            ) {
+                Text(
+                    a.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMid,
+                    softWrap = true,
+                )
+            }
         }
     }
 }

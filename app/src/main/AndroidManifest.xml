@@ -3,6 +3,11 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- زنده نگه داشتن سرور هرمس وقتی اپ در پس‌زمینه است. بدون این، اندروید
+         بعد از چند دقیقه پروسهٔ اپ را کشت می‌کند و چون سرور فرزندِ همان پروسه
+         است، دستورات در حال اجرا نصفه می‌مانند. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <application
         android:allowBackup="true"
         android:label="@string/app_name"
@@ -20,5 +25,13 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- سرویس پیش‌زمینه‌ای که سرور هرمس را زنده نگه می‌دارد.
+             نوعی (foregroundServiceType) declare نمی‌کنیم: targetSdk هنوز ۲۸
+             است و تعیین نکردنِ نوع یعنی اندروید محدودیت‌های زمانیِ نوع‌های
+             خاص (مثلاً سقف ۶ ساعت برای dataSync در Android 15+) را اعمال
+             نمی‌کند. -->
+        <service
+            android:name=".core.runtime.HermesService"
+            android:exported="false"/>
     </application>
 </manifest>

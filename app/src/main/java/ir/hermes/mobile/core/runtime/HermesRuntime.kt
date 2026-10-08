@@ -43,6 +43,8 @@ object HermesRuntime {
 
     @Volatile private var process: Process? = null
     @Volatile private var watchdog: Thread? = null
+    // کانتکستِ برنامه برای توقفِ سرویس پیش‌زمینه در [stop]
+    @Volatile private var appContext: android.content.Context? = null
 
     val isRunning: Boolean
         get() = process?.let { runCatching { it.exitValue(); false }.getOrDefault(true) } ?: false
@@ -98,6 +100,15 @@ object HermesRuntime {
             return
         }
         val app = ctx.applicationContext
+        appContext = app
+        // وضعیت را *قبل* از روشن کردن سرویس روی STARTING می‌گذاریم: سرویس به
+        // محض شروع، این وضعیت را تماشا می‌کند و اگر STOPPED ببیند، فوراً
+        // خودش را می‌بندد.
+        _state.value = Snapshot(State.STARTING, message = "راه‌اندازی سرور هرمس...")
+        // سرویس پیش‌زمینه را روشن می‌کنیم. اگر بعد از چند دقیقه اپ به
+        // پس‌زمینه برود، اندروید بدونِ آن پروسه را کشت می‌کند و سرور (که
+        // فرزندِ همین پروسه است) همراهش می‌میرد.
+        HermesService.start(app)
 
         if (!RootfsInstaller.isInstalled(app)) {
             _state.value = Snapshot(State.FAILED, message = "ابتدا هرمس را نصب کنید")
@@ -211,6 +222,8 @@ object HermesRuntime {
         if (_state.value.state != State.STOPPED) {
             _state.value = Snapshot(State.STOPPED, message = "سرور خاموش شد")
         }
+        // سرویس پیش‌زمینه دیگر دلیلی برای زنده ماندن ندارد.
+        appContext?.let { HermesService.stop(it) }
     }
 
     private fun stopInternal() {

@@ -91,6 +91,17 @@ class ChatEngine {
     val model = MutableStateFlow("")
     val streaming = MutableStateFlow("")
 
+    /**
+     * آیا نوبت شروع شده ولی هنوز هیچ چیز قابل‌نمایشی نیامده؟
+     *
+     * از لحظهٔ ارسال پیام تا رسیدنِ اولین نشانهٔ بصری (متنِ بازاندیشی، متنِ
+     * پاسخ، یا شروعِ ابزار) `true` است. این پرچمِ تک‌نوبتی است و برخلافِ
+     * بررسیِ کلِ لیستِ پیام‌ها، بعد از اولین پاسخ هم دوباره درست کار
+     * می‌کند: اگر کاربر پیامِ بعدی را بفرستد و هنوز هیچ خروجی‌ای نیامده
+     * باشد، دوباره `true` می‌شود.
+     */
+    val waiting = MutableStateFlow(false)
+
     private var assistantMsg: ChatMessage? = null
 
     /**
@@ -228,12 +239,14 @@ class ChatEngine {
             "tool" -> ChatMessage(newId(), MsgRole.TOOL).also {
                 it.tools.add(
                     ToolRun(
-                        name = J.str(o, "name", "ابزار"),
+                        name = J.str(o, "name", J.str(o, "tool", "ابزار")),
                         status = "پایان",
                         detail = J.str(o, "summary"),
-                        context = J.str(o, "context"),
-                        args = J.str(o, "args"),
-                        result = J.str(o, "result"),
+                        context = J.str(o, "context", J.str(o, "detail")),
+                        // args/result در تاریخچه ممکن است رشته یا آبجکت JSON
+                        // باشند؛ هر دو حالت به متنِ خوانا تبدیل می‌شوند.
+                        args = clamp(argsText(o)),
+                        result = clamp(resultText(o)),
                     ),
                 )
             }
@@ -256,6 +269,10 @@ class ChatEngine {
         notice.value = null
         assistantMsg = null
         state.value = TurnState.THINKING
+        // از همین لحظه که کاربر دکمهٔ ارسال را می‌زند، اسپینرِ «در حال
+        // فکر کردن» نشان داده می‌شود — تا رسیدنِ `turn.start` هم صفحه بی‌صدا
+        // نمی‌ماند.
+        waiting.value = true
         streaming.value = ""
 
         // بدون نشست معتبر، هرمس درخواست را با خطا رد می‌کند.
@@ -292,6 +309,47 @@ class ChatEngine {
     private fun clamp(s: String, max: Int = 8000): String =
         if (s.length <= max) s else s.take(max) + "\n… (ادامه بریده شد)"
 
+    /**
+     * استخراج ورودیِ (args) یک ابزار از رویداد سرور.
+     *
+     * سرور args را به دو شکل می‌فرستد: رشتهٔ آمادهٔ `args_text`، یا آبجکت
+     * JSON زیر کلید `args`. قبلاً فقط `args_text` خوانده می‌شد، به همین
+     * دلیل برای ابزارهایی که args را فقط به‌صورت آبجکت می‌فرستادند، متنِ
+     * کامل دستور بعد از اکسپند خالی می‌ماند.
+     */
+    private fun argsText(p: JsonObject): String {
+        J.str(p, "args_text").takeIf { it.isNotBlank() }?.let { return it }
+        J.str(p, "command").takeIf { it.isNotBlank() }?.let { return it }
+        J.str(p, "cmd").takeIf { it.isNotBlank() }?.let { return it }
+        J.str(p, "input").takeIf { it.isNotBlank() }?.let { return it }
+        p["args"]?.let { return jsonText(it) }
+        p["arguments"]?.let { return jsonText(it) }
+        return ""
+    }
+
+    /**
+     * استخراج خروجیِ یک ابزار از رویداد سرور.
+     *
+     * خروجی ممکن است رشتهٔ `result_text`، یا آبجکت JSON زیر کلید `result`
+     * باشد (آبجکت باید قالب‌بندی شود تا خوانا باشد).
+     */
+    private fun resultText(p: JsonObject): String {
+        J.str(p, "result_text").takeIf { it.isNotBlank() }?.let { return it }
+        J.str(p, "output").takeIf { it.isNotBlank() }?.let { return it }
+        J.str(p, "stdout").takeIf { it.isNotBlank() }?.let { return it }
+        J.str(p, "content").takeIf { it.isNotBlank() }?.let { return it }
+        p["result"]?.let { return jsonText(it) }
+        return ""
+    }
+
+    /** تبدیل یک عنصر JSON به متنِ خوانا. */
+    private fun jsonText(e: JsonElement?): String = when (e) {
+        null, JsonNull -> ""
+        is JsonPrimitive -> e.content
+        is JsonObject, is JsonArray -> J.pretty(e).trim()
+        else -> e.toString()
+    }
+
     /** آیا خطای سرور یعنی «این نشست را نمی‌شناسم»؟ */
     private fun isStaleSession(msg: String?): Boolean {
         val m = (msg ?: "").lowercase()
@@ -302,6 +360,7 @@ class ChatEngine {
     private fun fail(msg: String) {
         state.value = TurnState.ERROR
         streaming.value = ""
+        waiting.value = false
         finishSteps(StepStatus.FAILED)
         addStep("error", "خطا", msg, StepStatus.FAILED)
         val m = ChatMessage(newId(), MsgRole.ASSISTANT)
@@ -315,6 +374,7 @@ class ChatEngine {
         messages.value = emptyList()
         state.value = TurnState.IDLE
         streaming.value = ""
+        waiting.value = false
         notice.value = null
         assistantMsg = null
         _steps.value = emptyList()
@@ -322,6 +382,7 @@ class ChatEngine {
 
     fun interrupt() {
         HermesRepo.socket.interrupt()
+        waiting.value = false
         finishSteps(StepStatus.DONE)
         addStep("turn", "متوقف شد", "", StepStatus.DONE)
         state.value = TurnState.DONE
@@ -336,6 +397,9 @@ class ChatEngine {
                 state.value = TurnState.THINKING
                 _steps.value = emptyList()
                 assistantMsg = null
+                // تا وقتی اولین نشانهٔ بصری نیامده، باید یک اسپینر نشان داده
+                // شود — وگرنه صفحهٔ چت بعد از ارسالِ پیام بی‌صدا می‌ماند.
+                waiting.value = true
                 addStep("think", "آماده‌سازی نوبت")
                 streaming.value = ""
             }
@@ -351,6 +415,8 @@ class ChatEngine {
             "message.interim" -> {
                 val t = J.str(p, "text")
                 if (!J.bool(p, "already_streamed") && t.isNotBlank()) {
+                    // متنِ میان‌نوبت هم یک نشانهٔ بصری است.
+                    waiting.value = false
                     val m = assistantMsg ?: ChatMessage(newId(), MsgRole.ASSISTANT, pending = true)
                         .also { assistantMsg = it; messages.value = messages.value + it }
                     m.text += t
@@ -366,6 +432,9 @@ class ChatEngine {
                     // حباب فعلی بسته می‌شود تا متن بعدی در حباب تازه بیاید.
                     sealAssistant()
                 } else {
+                    // اولین متنِ پاسخ رسید: دیگر اسپینرِ «در حال فکر کردن»
+                    // نشان داده نمی‌شود.
+                    waiting.value = false
                     val m = assistantMsg ?: ChatMessage(newId(), MsgRole.ASSISTANT, pending = true)
                         .also { assistantMsg = it; messages.value = messages.value + it }
                     m.text += t
@@ -382,6 +451,8 @@ class ChatEngine {
             "reasoning.delta", "thinking.delta" -> {
                 val t = J.str(p, "text")
                 if (t.isNotEmpty()) {
+                    // اولین متنِ بازاندیشی رسید: اسپینرِ انتظار دیگر لازم نیست.
+                    waiting.value = false
                     val m = assistantMsg ?: ChatMessage(newId(), MsgRole.ASSISTANT, pending = true)
                         .also { assistantMsg = it; messages.value = messages.value + it }
                     m.reasoning += t
@@ -405,6 +476,9 @@ class ChatEngine {
                 ) addStep("toolgen", title)
             }
             "tool.start" -> {
+                // شروعِ ابزار هم یک نشانهٔ بصری است: دیگر اسپینر نشان نمی‌دهیم،
+                // چون ردیفِ «در حال اجرا» خودش اسپینر دارد.
+                waiting.value = false
                 val toolName = J.str(p, "name", J.str(p, "tool", "ابزار"))
                 val toolId = J.str(p, "tool_id")
                 val ctx = J.str(p, "context", J.str(p, "detail"))
@@ -418,7 +492,10 @@ class ChatEngine {
                         name = toolName,
                         status = "در حال اجرا",
                         context = ctx,
-                        args = clamp(J.str(p, "args_text")),
+                        // ورودیِ ابزار ممکن است به‌صورت رشتهٔ `args_text` یا
+                        // آبجکت JSON `args` بیاید — هر دو حالت پشتیبانی می‌شود
+                        // تا متنِ کامل دستور بعد از اکسپند دیده شود.
+                        args = clamp(argsText(p)),
                     ),
                 )
                 touch(m)
@@ -429,18 +506,17 @@ class ChatEngine {
                 val s = addStep("tool", "ابزار: " + toolName, ctx)
                 s.toolId = toolId
                 s.context = ctx
-                s.args = clamp(J.str(p, "args_text"))
+                s.args = clamp(argsText(p))
                 touchStep(s)
             }
             "tool.complete", "tool.end" -> {
                 val name = J.str(p, "name", J.str(p, "tool"))
                 val toolId = J.str(p, "tool_id")
                 val summary = J.str(p, "summary")
-                val ctx0 = J.str(p, "context")
-                val rt = J.str(p, "result_text")
-                val out = if (rt.isNotBlank()) rt
-                else p["result"]?.let { if (it is JsonPrimitive) it.content else J.pretty(it) } ?: ""
-                val args0 = p["args"]?.let { clamp(J.pretty(it)) } ?: ""
+                // context ممکن است زیر کلید `context` یا `detail` بیاید.
+                val ctx0 = J.str(p, "context", J.str(p, "detail"))
+                val out = resultText(p)
+                val args0 = clamp(argsText(p))
                 // پیدا کردن ابزارِ در حال اجرا در حبابِ فعلی (یا آخرین حباب).
                 // تا وقتی متن جدید نیامده، ابزارها در همان حبابِ قبلی می‌مانند.
                 val owner = assistantMsg ?: messages.value.lastOrNull { it.tools.isNotEmpty() }
@@ -449,7 +525,7 @@ class ChatEngine {
                 run?.let {
                     it.status = "پایان"
                     if (summary.isNotBlank()) it.detail = summary
-                    if (it.context.isBlank()) it.context = ctx0
+                    if (ctx0.isNotBlank()) it.context = ctx0
                     if (it.args.isBlank()) it.args = args0
                     if (out.isNotBlank()) it.result = clamp(out)
                 }
@@ -502,6 +578,7 @@ class ChatEngine {
                 )
                 state.value = TurnState.DONE
                 streaming.value = ""
+                waiting.value = false
                 assistantMsg = null
             }
             "turn.error", "error" -> {
@@ -530,6 +607,7 @@ class ChatEngine {
                 addStep("error", "خطا", msg, StepStatus.FAILED)
                 state.value = TurnState.ERROR
                 streaming.value = ""
+                waiting.value = false
                 assistantMsg = null
             }
             "model.changed" -> { model.value = J.str(p, "model"); notice.value = "مدل تغییر کرد" }

@@ -76,10 +76,16 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (id: String, title: String) -> 
         val id = J.str(s, "id", J.str(s, "session_id"))
         if (id.isBlank()) { error = "شناسهٔ نشست خالی است"; return }
         scope.launch {
-            // هرمس نشستِ فعال را رد می‌کند؛ اول کامل رهاش می‌کنیم. این کار
-            // با مهلتِ کوتاه انجام می‌شود تا اگر سرور جواب نداد، حذف معطل
-            // نشستِ نامعتبرِ قبلی نشود.
+            // هرمس نشستِ فعال را رد می‌کند؛ اول کامل متوقفش می‌کنیم.
+            //
+            // نکتهٔ مهم: نشستِ فعالِ رویِ سرور لزوماً با `socket.sessionId`ی
+            // محلی برابر نیست — ممکن است کاربر از چت خارج شده باشد و نشست
+            // محلی پاک شده باشد، ولی سرور هنوز همان نشست را فعال نگه داشته
+            // باشد. به همین دلیل *همیشه* `session.interrupt` برای نشستِ هدف
+            // می‌فرستیم (رد شدنش بی‌ضرر است) و اگر نشست محلیِ فعلی بود، آن را
+            // هم کامل رها می‌کنیم.
             if (id == HermesRepo.socket.sessionId) HermesRepo.releaseCurrentSession()
+            else HermesRepo.stopSession(id)
             HermesRepo.deleteSession(id).onFailure { error = it.message }
             load()
         }

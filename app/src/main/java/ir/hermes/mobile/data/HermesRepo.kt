@@ -45,6 +45,10 @@ object HermesRepo {
     private const val CACHE_SESSIONS = "sessions"
     private const val CACHE_MODEL_OPTIONS = "model_options"
     private const val CACHE_ENDPOINTS = "endpoints"
+    private const val CACHE_TOOLS = "tools"
+    private const val CACHE_TOOLSETS = "toolsets"
+    private const val CACHE_SKILLS = "skills"
+    private const val CACHE_PLUGINS = "plugins"
 
     val logLines = MutableStateFlow<List<String>>(emptyList())
 
@@ -199,15 +203,34 @@ object HermesRepo {
      * رها کردنِ کامل نشست فعالِ کنونی.
      *
      * هرمس در هر لحظه فقط یک نشست را «فعال» نگه می‌دارد. تا وقتی این نشست
-     * بسته نشود، `session.create` و `session.delete` برای همان نشست رد
+     * متوقف نشود، `session.create` و `session.delete` برای همان نشست رد
      * می‌شوند — همین باعث می‌شد «نشست جدید» و «حذف بالاترین نشست» کار
-     * نکنند. درخواست بستن با مهلتِ کوتاه فرستاده می‌شود (رد شدنش مشکلی
-     * ندارد؛ مهم این است که دیگر نشست فعلی محلیِ نامعتبر در دست نباشد).
+     * نکنند.
+     *
+     * برای خروج از حالت فعال، اول `session.interrupt` فرستاده می‌شود (این
+     * متدِ درستِ «توقف نشست» در هرمس است؛ `session.close` ممکن است جواب
+     * ندهد). رد شدنش مشکلی ندارد؛ مهم این است که دیگر نشست فعلی محلیِ
+     * نامعتبر در دست نباشد.
      */
     suspend fun releaseCurrentSession() {
         val id = socket.sessionId
         clearSession()
-        if (id.isNotBlank()) runCatching { closeSession(id) }
+        if (id.isNotBlank()) stopSession(id)
+    }
+
+    /**
+     * متوقف کردن یک نشست روی سرور.
+     *
+     * هرمس نشستِ *فعال* را فقط بعد از توقف می‌پذیرد (حذف یا ساخت نشست جدید
+     * وقتی نشستی فعال است رد می‌شود). این تابع نشست را با `session.interrupt`
+     * متوقف می‌کند و، برای پشتیبانی از نسخه‌های قدیمی‌تر، `session.close` را
+     * هم می‌فرستد. هر دو با مهلتِ کوتاه و `runCatching` فرستاده می‌شوند تا
+     * اگر سرور جواب نداد، عملیاتِ اصلی (مثلاً حذف) معطل نشود.
+     */
+    suspend fun stopSession(id: String) {
+        if (id.isBlank()) return
+        runCatching { rpc("session.interrupt", str("session_id", id), timeoutMs = RPC_CLOSE) }
+        runCatching { closeSession(id) }
     }
 
     /**
@@ -344,8 +367,18 @@ object HermesRepo {
 
     // ---------- ابزارها ----------
     suspend fun toolsList(): Result<JsonElement> = rpc("tools.list")
+        .onSuccess { cache.put(CACHE_TOOLS, it) }
+
+    /** ابزارهای کش‌شده (نمایش فوری پیش از پاسخ سرور). */
+    fun cachedTools(): JsonArray? =
+        (cache.get(CACHE_TOOLS) as? JsonObject)?.let { J.arr(it["tools"]) }
 
     suspend fun toolSets(): Result<JsonElement> = rpc("toolsets.list")
+        .onSuccess { cache.put(CACHE_TOOLSETS, it) }
+
+    /** مجموعه‌های ابزار کش‌شده. */
+    fun cachedToolSets(): JsonArray? =
+        (cache.get(CACHE_TOOLSETS) as? JsonObject)?.let { J.arr(it["toolsets"]) }
 
     suspend fun toolsConfigure(name: String, enabled: Boolean, args: JsonObject = JsonObject(emptyMap())): Result<JsonElement> =
         rpc("tools.configure", buildJsonObject {
@@ -354,8 +387,30 @@ object HermesRepo {
 
     // ---------- مهارت و پلاگین ----------
     suspend fun skills(): Result<JsonElement> = rpc("skills.manage", buildJsonObject { put("action", "list") })
+        .onSuccess { cache.put(CACHE_SKILLS, it) }
+
+    /** مهارت‌های کش‌شده. */
+    fun cachedSkills(): JsonArray? =
+        (cache.get(CACHE_SKILLS) as? JsonObject)?.let { J.arr(it["skills"]) }
+
+    /** فعال یا غیرفعال کردن یک مهارت. */
+    suspend fun toggleSkill(name: String, enabled: Boolean): Result<JsonElement> =
+        rpc("skills.manage", buildJsonObject {
+            put("action", if (enabled) "enable" else "disable"); put("name", name)
+        })
 
     suspend fun plugins(): Result<JsonElement> = rpc("plugins.list")
+        .onSuccess { cache.put(CACHE_PLUGINS, it) }
+
+    /** افزونه‌های کش‌شده. */
+    fun cachedPlugins(): JsonArray? =
+        (cache.get(CACHE_PLUGINS) as? JsonObject)?.let { J.arr(it["plugins"]) }
+
+    /** فعال یا غیرفعال کردن یک افزونه. */
+    suspend fun togglePlugin(name: String, enabled: Boolean): Result<JsonElement> =
+        rpc("plugins.manage", buildJsonObject {
+            put("action", if (enabled) "enable" else "disable"); put("name", name)
+        })
 
     // ---------- کرون ----------
     suspend fun cronList(): Result<JsonElement> = rpc("cron.manage", buildJsonObject { put("action", "list") })
@@ -411,4 +466,19 @@ object J {
     fun pretty(e: JsonElement): String = try {
         kotlinx.serialization.json.Json { prettyPrint = true }.encodeToString(JsonElement.serializer(), e)
     } catch (_: Exception) { e.toString() }
+
+    /**
+     * نامِ خوانای یک ابزار/مهارت/افزونه.
+     *
+     * سرور ممکن است نام را زیر کلید `name`، `id` یا `slug` بفرستد. این
+     * کمک‌کار همه را امتحان می‌کند تا سوییچ‌ها و نمایش‌ها به‌درستی کار
+     * کنند — قبلاً اگر `name` وجود نداشت، نام خالی فرض می‌شد.
+     */
+    fun toolName(o: JsonObject): String {
+        J.str(o, "name").takeIf { it.isNotBlank() }?.let { return it }
+        J.str(o, "id").takeIf { it.isNotBlank() }?.let { return it }
+        J.str(o, "slug").takeIf { it.isNotBlank() }?.let { return it }
+        J.str(o, "title").takeIf { it.isNotBlank() }?.let { return it }
+        return ""
+    }
 }

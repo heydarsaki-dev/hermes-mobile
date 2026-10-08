@@ -57,16 +57,27 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
     var addModelTarget by remember { mutableStateOf<JsonObject?>(null) }
     var keyTarget by remember { mutableStateOf<Pair<String, String>?>(null) } // slug to displayName
 
+    /** اعمالِ گزینهٔ مدل‌ها روی state صفحه (هم برای دادهٔ کش، هم برای دادهٔ تازه). */
+    fun applyOptions(o: JsonObject) {
+        currentProvider = J.str(o, "provider", "")
+        currentModel = J.str(o, "model", "")
+        providers = J.listOf(o, "providers").map { J.obj(it) }
+            .filter { !J.bool(it, "is_user_defined") && J.str(it, "slug").lowercase() != "custom" }
+    }
+
     suspend fun load(refresh: Boolean = false) {
-        loading = true; error = null
+        // ابتدا دادهٔ کش‌شده را فوری نمایش می‌دهیم تا کاربر منتظر سرور
+        // نماند؛ سپس در پس‌زمینه از هرمس تازه‌سازی می‌کنیم.
+        val fromCache = if (!refresh) {
+            HermesRepo.cachedModelOptions()?.also { applyOptions(it) }
+            HermesRepo.cachedEndpoints()?.let { endpoints = it.map { J.obj(it) } }
+        } else null
+        // اگر کشی نبود (اولین بازدید)، حالتِ بارگذاری را نشان می‌دهیم تا
+        // پیامِ «پرووایدری یافت نشد» به‌اشتباه نمایش داده نشود.
+        loading = refresh || fromCache == null
+        error = null
         HermesRepo.modelOptions(refresh)
-            .onSuccess { r ->
-                val o = J.obj(r)
-                currentProvider = J.str(o, "provider", "")
-                currentModel = J.str(o, "model", "")
-                providers = J.listOf(o, "providers").map { J.obj(it) }
-                    .filter { !J.bool(it, "is_user_defined") && J.str(it, "slug").lowercase() != "custom" }
-            }
+            .onSuccess { r -> applyOptions(J.obj(r)) }
             .onFailure { error = it.message }
         HermesRepo.customEndpoints()
             .onSuccess { r -> endpoints = J.listOf(J.obj(r), "endpoints").map { J.obj(it) } }
