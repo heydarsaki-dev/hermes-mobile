@@ -13,7 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -40,7 +40,6 @@ import ir.hermes.mobile.ui.hub.HubScreen
 import ir.hermes.mobile.ui.model.ModelScreen
 import ir.hermes.mobile.ui.sessions.SessionsScreen
 import ir.hermes.mobile.ui.settings.SettingsScreen
-import ir.hermes.mobile.ui.skills.SkillsScreen
 import ir.hermes.mobile.ui.terminal.TerminalScreen
 import ir.hermes.mobile.ui.theme.HermesTheme
 import ir.hermes.mobile.ui.theme.Ink0
@@ -244,8 +243,6 @@ private fun Root() {
                             // پس بعد از تغییر مدل، نشست فعال پاک و چت تازه می‌شود.
                             onModelChanged = { HermesRepo.clearSession(); engine.resetForNewSession() },
                         )
-                        "tools" -> ToolsScreenProxy { route = "hub" }
-                        "skills" -> SkillsScreen { route = "hub" }
                         "cron" -> CronScreen { route = "hub" }
                         "terminal" -> TerminalScreen { route = "hub" }
                         "settings" -> SettingsScreen({ route = "hub" }) {
@@ -264,16 +261,11 @@ private fun Root() {
 }
 
 @Composable
-private fun ToolsScreenProxy(onBack: () -> Unit) {
-    ir.hermes.mobile.ui.tools.ToolsScreen(onBack)
-}
-
-@Composable
 private fun HubBar(current: String, onGo: (String) -> Unit) {
     val items = listOf(
         Triple("hub", "خانه", Icons.Default.Home),
         Triple("chat", "چت", Icons.AutoMirrored.Filled.Chat),
-        Triple("tools", "ابزار", Icons.Default.Build),
+        Triple("sessions", "نشست‌ها", Icons.Default.Forum),
         Triple("settings", "تنظیمات", Icons.Default.Settings),
     )
     Row(

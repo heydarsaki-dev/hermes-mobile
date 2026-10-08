@@ -37,8 +37,8 @@ fun HubScreen(
             HubItem("chat", "گفت‌وگو", "چت با هرمس", Icons.AutoMirrored.Filled.Chat, Gold),
             HubItem("sessions", "نشست‌ها", "تاریخچه و مدیریت", Icons.Default.Forum, Cyan),
             HubItem("model", "مدل و پرووایدر", "انتخاب و کلید API", Icons.Default.Tune, Violet),
-            HubItem("tools", "ابزارها", "فعال/غیرفعال کردن", Icons.Default.Build, Lime),
-            HubItem("skills", "مهارت و افزونه", "افزونه‌های هرمس", Icons.Default.Extension, Gold),
+            // ابزارها، مهارت‌ها و افزونه‌ها دیگر از اینجا مدیریت نمی‌شوند —
+            // خودِ هرمس از داخل چت آن‌ها را مدیریت می‌کند.
             HubItem("cron", "زمان‌بندی", "کارهای خودکار", Icons.Default.Schedule, Cyan),
             HubItem("terminal", "ترمینال", "اجرای دستور شل", Icons.Default.Terminal, Rose),
             HubItem("settings", "تنظیمات", "اتصال و آمار", Icons.Default.Settings, TextMid),
