@@ -46,6 +46,7 @@ object HermesRepo {
     private const val CACHE_MODEL_OPTIONS = "model_options"
     private const val CACHE_ENDPOINTS = "endpoints"
     private const val CACHE_TOOLS = "tools"
+    private const val CACHE_TOOLS_SHOW = "tools.show"
     private const val CACHE_TOOLSETS = "toolsets"
     private const val CACHE_SKILLS = "skills"
     private const val CACHE_PLUGINS = "plugins"
@@ -366,12 +367,32 @@ object HermesRepo {
     })
 
     // ---------- ابزارها ----------
+    //
+    // توجه: `tools.list` در واقع فهرستِ *مجموعه‌های ابزار* (toolsets) را
+    // برمی‌گرداند، نه ابزارهای تکی. هر آیتم شامل name/description/tool_count/
+    // enabled و tools (نام ابزارهای زیرمجموعه) است. ابزارهای تکی از `tools.show`
+    // می‌آیند.
     suspend fun toolsList(): Result<JsonElement> = rpc("tools.list")
         .onSuccess { cache.put(CACHE_TOOLS, it) }
 
-    /** ابزارهای کش‌شده (نمایش فوری پیش از پاسخ سرور). */
+    /** مجموعه‌های ابزارِ کش‌شده (نمایش فوری پیش از پاسخ سرور). */
     fun cachedTools(): JsonArray? =
-        (cache.get(CACHE_TOOLS) as? JsonObject)?.let { J.arr(it["tools"]) }
+        (cache.get(CACHE_TOOLS) as? JsonObject)?.let { J.arr(it["toolsets"]) }
+
+    /**
+     * فهرستِ ابزارهای تکیِ فعال، گروه‌بندی‌شده بر اساس مجموعه.
+     *
+     * پاسخِ `tools.show` این شکلی است:
+     * ```
+     * {"sections": [{"name": "...", "tools": [{"name","description"}, ...]}], "total": N}
+     * ```
+     */
+    suspend fun toolsShow(): Result<JsonElement> = rpc("tools.show")
+        .onSuccess { cache.put(CACHE_TOOLS_SHOW, it) }
+
+    /** ابزارهای تکیِ کش‌شده. */
+    fun cachedToolsShow(): JsonArray? =
+        (cache.get(CACHE_TOOLS_SHOW) as? JsonObject)?.let { J.arr(it["sections"]) }
 
     suspend fun toolSets(): Result<JsonElement> = rpc("toolsets.list")
         .onSuccess { cache.put(CACHE_TOOLSETS, it) }
@@ -380,36 +401,64 @@ object HermesRepo {
     fun cachedToolSets(): JsonArray? =
         (cache.get(CACHE_TOOLSETS) as? JsonObject)?.let { J.arr(it["toolsets"]) }
 
-    suspend fun toolsConfigure(name: String, enabled: Boolean, args: JsonObject = JsonObject(emptyMap())): Result<JsonElement> =
+    /**
+     * فعال یا غیرفعال کردن یک یا چند مجموعهٔ ابزار.
+     *
+     * پروتکل سرور (`tools.configure`):
+     * ```
+     * {"action": "enable"|"disable", "names": ["shell", "fs", ...]}
+     * ```
+     * توجه: پارامترها `action` + `names[]` هستند — یک `name`/`enabled` تکی
+     * پذیرفته نمی‌شود.
+     */
+    suspend fun toolsConfigure(names: List<String>, enable: Boolean): Result<JsonElement> =
         rpc("tools.configure", buildJsonObject {
-            put("name", name); put("enabled", enabled); put("args", args)
+            put("action", if (enable) "enable" else "disable")
+            putJsonArray("names") { names.forEach { add(it) } }
         })
 
-    // ---------- مهارت و پلاگین ----------
+    // ---------- مهارت و افزونه ----------
+    //
+    // توجه: `skills.manage` فقط actionهای list/search/install/browse/inspect
+    // را دارد و امکانِ فعال/غیرفعال کردنِ تک‌تک مهارت‌ها را فراهم نمی‌کند.
+    // فهرست برمی‌گرداند: `{"skills": {"دسته": ["نام مهارت", ...]}}` — یک
+    // دیکشنری از دسته‌ها، نه آرایه.
     suspend fun skills(): Result<JsonElement> = rpc("skills.manage", buildJsonObject { put("action", "list") })
         .onSuccess { cache.put(CACHE_SKILLS, it) }
 
-    /** مهارت‌های کش‌شده. */
-    fun cachedSkills(): JsonArray? =
-        (cache.get(CACHE_SKILLS) as? JsonObject)?.let { J.arr(it["skills"]) }
+    /** مهارت‌های کش‌شده (دیکشنریِ دسته → فهرست نام‌ها). */
+    fun cachedSkills(): JsonElement? = (cache.get(CACHE_SKILLS) as? JsonObject)?.get("skills")
 
-    /** فعال یا غیرفعال کردن یک مهارت. */
-    suspend fun toggleSkill(name: String, enabled: Boolean): Result<JsonElement> =
-        rpc("skills.manage", buildJsonObject {
-            put("action", if (enabled) "enable" else "disable"); put("name", name)
-        })
-
-    suspend fun plugins(): Result<JsonElement> = rpc("plugins.list")
+    /**
+     * فهرستِ افزونه‌ها (نصب‌شده و بسته‌بندی‌شده) با وضعیتِ فعال‌سازی.
+     *
+     * از `plugins.manage` (action=list) استفاده می‌کنیم نه `plugins.list`،
+     * چون اولی توضیحات و منبعِ هر افزونه را هم برمی‌گرداند و بسته‌های
+     * بسته‌بندی‌شده را شامل می‌شود.
+     *
+     * پاسخ: `{"plugins": [{name, version, description, source, status}], ...}`
+     * که `status` یکی از `enabled`/`disabled`/`not enabled` است.
+     */
+    suspend fun plugins(): Result<JsonElement> = rpc("plugins.manage", buildJsonObject { put("action", "list") })
         .onSuccess { cache.put(CACHE_PLUGINS, it) }
 
     /** افزونه‌های کش‌شده. */
     fun cachedPlugins(): JsonArray? =
         (cache.get(CACHE_PLUGINS) as? JsonObject)?.let { J.arr(it["plugins"]) }
 
-    /** فعال یا غیرفعال کردن یک افزونه. */
-    suspend fun togglePlugin(name: String, enabled: Boolean): Result<JsonElement> =
+    /**
+     * فعال یا غیرفعال کردن یک افزونه.
+     *
+     * پروتکل سرور (`plugins.manage`):
+     * ```
+     * {"action": "toggle", "name": "...", "enable": true|false}
+     * ```
+     * توجه: action همیشه `toggle` است و جهتِ تغییر با `enable` (بولی) مشخص
+     * می‌شود — `enable`/`disable` به‌عنوان action پذیرفته نمی‌شود.
+     */
+    suspend fun togglePlugin(name: String, enable: Boolean): Result<JsonElement> =
         rpc("plugins.manage", buildJsonObject {
-            put("action", if (enabled) "enable" else "disable"); put("name", name)
+            put("action", "toggle"); put("name", name); put("enable", enable)
         })
 
     // ---------- کرون ----------
@@ -461,6 +510,27 @@ object J {
         val any = root.values.firstOrNull()
         if (any is JsonArray && any.all { it is JsonObject }) return any
         return JsonArray(emptyList())
+    }
+
+    /**
+     * تبدیلِ دیکشنریِ «دسته → فهرستِ نام‌ها» به فهرستی از آبجکت‌های مسطح.
+     *
+     * سرور `skills.manage` (action=list) این ساختار را برمی‌گرداند:
+     * ```
+     * {"general": ["skill-a", "skill-b"], "code": [...]}
+     * ```
+     * برای نمایش در لیست، آن را به `[{"category","name"}, ...]` تبدیل می‌کنیم.
+     */
+    fun flattenSkills(e: JsonElement?): List<Pair<String, String>> {
+        val o = e as? JsonObject ?: return emptyList()
+        return o.entries
+            .sortedBy { it.key }
+            .flatMap { (cat, names) ->
+                arr(names).mapNotNull { n ->
+                    runCatching { n.jsonPrimitive.content }.getOrNull()?.takeIf { it.isNotBlank() }
+                        ?.let { cat to it }
+                }
+            }
     }
 
     fun pretty(e: JsonElement): String = try {
