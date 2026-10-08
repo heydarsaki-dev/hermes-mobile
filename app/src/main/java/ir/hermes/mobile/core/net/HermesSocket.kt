@@ -42,7 +42,23 @@ class HermesSocket(
      */
     private val awaiters = ConcurrentHashMap<String, CompletableDeferred<RpcEvent.Response>>()
 
+    /**
+     * شناسهٔ نشستِ زنده (۸ حرف) — کلیدِ واقعیِ نشست در رجیستریِ سرور.
+     *
+     * برای `prompt.submit`، `session.interrupt` و `session.close` باید همین
+     * شناسه فرستاده شود.
+     */
     @Volatile var sessionId: String = ""
+
+    /**
+     * کلیدِ ذخیره‌شدهٔ نشست (UUID) — همان چیزی که `session.list` به‌عنوان
+     * `id` برمی‌گرداند و `session.delete` آن را می‌خواهد.
+     *
+     * توجه: این دو با هم متفاوت‌اند. ارسالِ UUID به `session.interrupt` با
+     * خطای «session not found» رد می‌شود و نشست زنده باقی می‌ماند — همان
+     * دلیلی که حذفِ نشستِ فعال با «cannot delete an active session» رد می‌شد.
+     */
+    @Volatile var sessionKey: String = ""
 
     fun connect() {
         disconnect()
@@ -95,6 +111,14 @@ class HermesSocket(
                 val type = p["type"]?.jsonPrimitive?.content ?: "unknown"
                 val payload = p["payload"]?.jsonObject ?: JsonObject(emptyMap())
                 val sid = p["sid"]?.jsonPrimitive?.contentOrNull
+                // رویدادها هر دو شناسه را حمل می‌کنند: `sid` زنده و `session_key`
+                // ذخیره‌شده. نگه‌داشتنِ هر دو باعث می‌شود حذف نشستِ فعال کار کند
+                // (رجوع کنید به توضیحات [sessionKey]).
+                if (!sid.isNullOrBlank()) {
+                    sessionId = sid
+                    p["session_key"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                        ?.let { sessionKey = it }
+                }
                 _events.tryEmit(RpcEvent.Event(type, payload, sid))
             } else {
                 val id = root["id"]?.jsonPrimitive?.contentOrNull ?: return

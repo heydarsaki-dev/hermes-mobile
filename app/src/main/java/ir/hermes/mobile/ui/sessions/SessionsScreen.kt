@@ -51,12 +51,12 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (id: String, title: String) -> 
     var error by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<JsonObject?>(null) }
     var pendingDelete by remember { mutableStateOf<JsonObject?>(null) }
-    var activeSid by remember { mutableStateOf(HermesRepo.socket.sessionId) }
+    var activeSid by remember { mutableStateOf(HermesRepo.socket.sessionKey) }
     val selection by HermesRepo.settings.selection.collectAsState(initial = ModelSelection())
 
     suspend fun load() {
         loading = true; error = null
-        activeSid = HermesRepo.socket.sessionId
+        activeSid = HermesRepo.socket.sessionKey
         HermesRepo.sessions()
             .onSuccess { r -> items = J.listOf(J.obj(r), "sessions", "items").map { J.obj(it) } }
             .onFailure { if (items.isEmpty()) error = it.message }
@@ -78,13 +78,12 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (id: String, title: String) -> 
         scope.launch {
             // هرمس نشستِ فعال را رد می‌کند؛ اول کامل متوقفش می‌کنیم.
             //
-            // نکتهٔ مهم: نشستِ فعالِ رویِ سرور لزوماً با `socket.sessionId`ی
-            // محلی برابر نیست — ممکن است کاربر از چت خارج شده باشد و نشست
-            // محلی پاک شده باشد، ولی سرور هنوز همان نشست را فعال نگه داشته
-            // باشد. به همین دلیل *همیشه* `session.interrupt` برای نشستِ هدف
-            // می‌فرستیم (رد شدنش بی‌ضرر است) و اگر نشست محلیِ فعلی بود، آن را
-            // هم کامل رها می‌کنیم.
-            if (id == HermesRepo.socket.sessionId) HermesRepo.releaseCurrentSession()
+            // نکتهٔ مهم دربارهٔ شناسه‌ها: `session.list` کلیدِ UUID ذخیره‌شده
+            // را می‌دهد، ولی رجیستریِ نشست‌های زندهٔ سرور با شناسهٔ ۸ حرفی
+            // کلید می‌خورد. `stopSession` این دو را از طریق `session.active_list`
+            // حل می‌کند. اگر همین نشستِ فعلی است، آن را کامل رها می‌کنیم تا
+            // وضعیت محلی هم پاک شود.
+            if (id == HermesRepo.socket.sessionKey) HermesRepo.releaseCurrentSession()
             else HermesRepo.stopSession(id)
             HermesRepo.deleteSession(id).onFailure { error = it.message }
             load()
@@ -156,7 +155,9 @@ fun SessionsScreen(onBack: () -> Unit, onPicked: (id: String, title: String) -> 
                                     // می‌سازد؛ باید همان شناسه برای گفت‌وگو استفاده شود.
                                     // اگر روی نشستِ دیگری غیر از نشست فعالِ فعلی کلیک
                                     // شده، نشستِ فعال رها می‌شود تا resume رد نشود.
-                                    if (id != HermesRepo.socket.sessionId) {
+                                    // مقایسه با `sessionKey` (UUID) درست است، نه با
+                                    // شناسهٔ زندهٔ ۸ حرفی.
+                                    if (id != HermesRepo.socket.sessionKey) {
                                         HermesRepo.releaseCurrentSession()
                                     }
                                     val live = HermesRepo.resume(id)

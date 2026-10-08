@@ -90,7 +90,11 @@ private fun Root() {
         HermesRepo.socket.events.collect { e ->
             if (e is RpcEvent.Event) {
                 engine.onEvent(e)
-                e.sid?.let { s -> if (s.isNotBlank()) { HermesRepo.startSession(s); sid = s } }
+                // خودِ سوکت هنگام رسیدن رویداد، `sessionId` و `sessionKey` را
+                // از روی `sid`/`session_key` همگام می‌کند؛ اینجا فقط وضعیتِ
+                // محلیِ UI را به‌روز می‌کنیم (startSession صدا نمی‌زنیم تا
+                // sessionKey پاک نشود).
+                e.sid?.let { s -> if (s.isNotBlank()) { sid = s } }
             }
         }
     }

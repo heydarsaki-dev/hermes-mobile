@@ -73,7 +73,16 @@ object HermesRepo {
         api.token = cfg.token
     }
 
-    fun startSession(id: String) { socket.sessionId = id }
+    /**
+     * ثبت نشست جاری.
+     *
+     * @param id شناسهٔ زندهٔ ۸ حرفی (برای prompt.submit / interrupt / close)
+     * @param key کلیدِ ذخیره‌شدهٔ UUID (برای session.delete و مقایسه با session.list)
+     */
+    fun startSession(id: String, key: String = "") {
+        socket.sessionId = id
+        socket.sessionKey = key
+    }
 
     /**
      * ارسال متد JSON-RPC با انتظار پاسخ.
@@ -140,9 +149,13 @@ object HermesRepo {
             if (m.isNotBlank()) put("model", m)
             if (p.isNotBlank()) put("provider", p)
         }
-        val id = rpc("session.create", params, timeoutMs = RPC_SLOW)
-            .getOrNull()?.let { J.str(J.obj(it), "session_id") } ?: ""
-        if (id.isNotBlank()) startSession(id)
+        val resp = rpc("session.create", params, timeoutMs = RPC_SLOW)
+            .getOrNull()?.let { J.obj(it) } ?: JsonObject(emptyMap())
+        // سرور دو شناسه برمی‌گرداند: `session_id` زندهٔ ۸ حرفی و
+        // `stored_session_id` (UUID) که در `session.list` به‌عنوان `id` می‌آید.
+        val id = J.str(resp, "session_id")
+        val key = J.str(resp, "stored_session_id")
+        if (id.isNotBlank()) startSession(id, key)
         return id.ifBlank { null }
     }
 
@@ -198,7 +211,7 @@ object HermesRepo {
      * پاک‌کردن نشست فعال. نشست بعدی با تنظیمات/مدل جاری ساخته می‌شود؛
      * لازم است چون هرمس مدل هر نشست را در زمان ساخت آن ثابت می‌کند.
      */
-    fun clearSession() { socket.sessionId = "" }
+    fun clearSession() { socket.sessionId = ""; socket.sessionKey = "" }
 
     /**
      * رها کردنِ کامل نشست فعالِ کنونی.
@@ -215,23 +228,52 @@ object HermesRepo {
      */
     suspend fun releaseCurrentSession() {
         val id = socket.sessionId
+        val key = socket.sessionKey
         clearSession()
-        if (id.isNotBlank()) stopSession(id)
+        if (id.isNotBlank()) stopSession(key.ifBlank { id }, knownLiveSid = id)
     }
 
     /**
      * متوقف کردن یک نشست روی سرور.
      *
      * هرمس نشستِ *فعال* را فقط بعد از توقف می‌پذیرد (حذف یا ساخت نشست جدید
-     * وقتی نشستی فعال است رد می‌شود). این تابع نشست را با `session.interrupt`
-     * متوقف می‌کند و، برای پشتیبانی از نسخه‌های قدیمی‌تر، `session.close` را
-     * هم می‌فرستد. هر دو با مهلتِ کوتاه و `runCatching` فرستاده می‌شوند تا
-     * اگر سرور جواب نداد، عملیاتِ اصلی (مثلاً حذف) معطل نشود.
+     * وقتی نشستی فعال است رد می‌شود).
+     *
+     * **نکتهٔ مهم دربارهٔ شناسه‌ها:** رجیستریِ نشست‌های زندهٔ سرور با
+     * شناسهٔ ۸ حرفی (`session_id`) کلید می‌خورد، ولی `session.list` و
+     * `session.delete` با کلیدِ UUID ذخیره‌شده کار می‌کنند. قبلاً UUID را به
+     * `session.interrupt` می‌فرستادیم و سرور با «session not found» جواب می‌داد
+     * — نشست زنده باقی می‌ماند و حذف با «cannot delete an active session» رد
+     * می‌شد. حالا شناسهٔ زنده را یا از حالتِ محلیِ نشستِ جاری می‌گیریم، یا
+     * از طریق `session.active_list` از سرور حل می‌کنیم.
+     *
+     * @param key کلید ذخیره‌شده (UUID) — برای پیدا کردن نشست زنده در سرور
+     * @param knownLiveSid شناسهٔ زندهٔ ۸ حرفی، اگر از قبل معلوم است (می‌تواند خالی باشد)
      */
-    suspend fun stopSession(id: String) {
-        if (id.isBlank()) return
-        runCatching { rpc("session.interrupt", str("session_id", id), timeoutMs = RPC_CLOSE) }
-        runCatching { closeSession(id) }
+    suspend fun stopSession(key: String, knownLiveSid: String = "") {
+        if (key.isBlank() && knownLiveSid.isBlank()) return
+        val sid = if (knownLiveSid.isNotBlank()) knownLiveSid else (liveSidFor(key) ?: "")
+        if (sid.isBlank()) return // نشست زنده‌ای روی سرور نیست؛ نیازی به توقف نیست
+        runCatching { rpc("session.interrupt", str("session_id", sid), timeoutMs = RPC_CLOSE) }
+        runCatching { closeSession(sid) }
+    }
+
+    /**
+     * پیدا کردن شناسهٔ زندهٔ ۸ حرفی برای یک کلیدِ ذخیره‌شده.
+     *
+     * `session.active_list` نشست‌های زنده را با هر دو `id` (زنده) و
+     * `session_key` (UUID) برمی‌گرداند؛ این تابع آن‌ها را تطبیق می‌دهد.
+     * اگر نشست زنده‌ای پیدا نشد، null برمی‌گرداند (یعنی نشست از قبل بسته شده).
+     */
+    private suspend fun liveSidFor(key: String): String? {
+        if (key.isBlank()) return null
+        return runCatching {
+            rpc("session.active_list", JsonObject(emptyMap()), timeoutMs = RPC_FAST)
+                .getOrNull()?.let { J.listOf(J.obj(it), "sessions") }
+                ?.firstOrNull { J.str(J.obj(it), "session_key") == key }
+                ?.let { J.str(J.obj(it), "id").ifBlank { J.str(J.obj(it), "session_id") } }
+                ?.takeIf { it.isNotBlank() }
+        }.getOrNull()
     }
 
     /**
@@ -246,10 +288,13 @@ object HermesRepo {
      * @return شناسهٔ زندهٔ نشست که باید برای گفت‌وگو استفاده شود.
      */
     suspend fun resume(id: String): String {
-        val live = rpc("session.resume", str("session_id", id), timeoutMs = RPC_SLOW)
-            .getOrNull()?.let { J.str(J.obj(it), "session_id") } ?: ""
+        val resp = rpc("session.resume", str("session_id", id), timeoutMs = RPC_SLOW)
+            .getOrNull()?.let { J.obj(it) } ?: JsonObject(emptyMap())
+        // `session_id` زنده می‌آید و `session_key` همان UUID ذخیره‌شده است.
+        val live = J.str(resp, "session_id")
+        val key = J.str(resp, "session_key").ifBlank { id }
         val use = live.ifBlank { id }
-        if (use.isNotBlank()) startSession(use)
+        if (use.isNotBlank()) startSession(use, key)
         return use
     }
 
