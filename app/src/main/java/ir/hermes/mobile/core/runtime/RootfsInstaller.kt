@@ -273,8 +273,10 @@ object RootfsInstaller {
             return
         }
         try {
-            // بازنویسی با نسخهٔ وصله‌شده از assets
-            ctx.assets.open("runtime/overlay/cron.scheduler.py.gz").use { input ->
+            // بازنویسی با نسخهٔ وصله‌شده از assets.
+            // نکته: پسوند `.gz` به AAPT می‌گوید فایل را از حالت فشرده خارج کند،
+            // پس باید پسوندی استفاده کنیم که AAPT آن را دست‌نخورده باقی می‌گذارد (`.bin`).
+            ctx.assets.open("runtime/overlay/cron_scheduler_overlay.bin").use { input ->
                 java.util.zip.GZIPInputStream(input).use { gz ->
                     file.outputStream().use { out -> gz.copyTo(out) }
                 }
