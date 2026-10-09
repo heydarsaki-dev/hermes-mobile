@@ -283,6 +283,10 @@ object HermesRuntime {
         cmd += "PATH=/opt/hermes-venv/bin:/usr/local/bin:/usr/bin:/bin"
         cmd += "TMPDIR=/tmp"
         cmd += "HERMES_DASHBOARD_SESSION_TOKEN=$token"
+        // بدون این، سرور تردِ desktop-cron-ticker را راه‌اندازی نمی‌کند و
+        // کرون‌جاب‌ها هرگز اجرا نمی‌شوند (web_server.py: HERMES_DESKTOP شرط شروع ترد کرون است).
+        // همچنین پلتفرم را روی «desktop» می‌گذارد که برای اپ موبایل درست‌تر از «tui» است.
+        cmd += "HERMES_DESKTOP=1"
         cmd += "/opt/hermes-venv/bin/hermes"
         cmd += "serve"
         cmd += "--host"; cmd += "127.0.0.1"
