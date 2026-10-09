@@ -100,6 +100,12 @@ object RootfsInstaller {
             "    \"sensitive content\",\n" +
             "]"
 
+    /**
+     * نشانگرِ overlay کرون. وقتی این رشته در `cron/scheduler.py` موجود باشد،
+     * نسخهٔ وصله‌شده قبلاً اعمال شده و دوباره کاری لازم نیست.
+     */
+    private const val CRON_OVERLAY_MARKER = "HERMES_MOBILE_OVERLAY: stable-cron-session-v1"
+
     fun rootfsDir(ctx: Context): File = File(ctx.filesDir, "runtime/rootfs")
     fun binDir(ctx: Context): File = File(ctx.filesDir, "runtime/bin")
     fun libDir(ctx: Context): File = File(ctx.filesDir, "runtime/lib")
@@ -140,6 +146,7 @@ object RootfsInstaller {
         ensureUnittest(ctx)
         patchAgentWaitTimeout(ctx)
         patchContentPolicyPatterns(ctx)
+        applyCronOverlay(ctx)
     }
 
     /**
@@ -233,6 +240,52 @@ object RootfsInstaller {
             CrashLogger.breadcrumb("ترمیم دستهٔ فیلتر محتوای هرمس (sensitive content)")
         } catch (t: Throwable) {
             CrashLogger.breadcrumb("ترمیم فیلتر محتوای هرمس ناموفق: ${t.message}")
+        }
+    }
+
+    /**
+     * اعمالِ overlay تغییراتِ سمتِ سرورِ کرون روی rootfs نصب‌شده.
+     *
+     * هرمس ۰.۱۹.۰ برای هر اجرای کرون یک نشستِ جدید (با مهر زمانی در شناسه) می‌سازد
+     * و تمام اجرا (پرامپت انگلیسی، دستورات ترمینال/پایتون، خروجی ابزارها) را در
+     * نشست می‌نویسد. نتیجه: انبوهی از نشست‌های شلوغ که در اپ دیده می‌شوند.
+     *
+     * این overlay سه چیز را در `cron/scheduler.py` تغییر می‌دهد:
+     *  ۱. شناسهٔ نشست ثابت می‌شود (`cron_{job_id}` بدون مهر زمانی) → **یک نشست
+     *     واحد برای هر کرون** که نتایجِ همهٔ اجراها در آن تجمع می‌کنند.
+     *  ۲. نوشتنِ خودکارِ ایجنت در نشست غیرفعال می‌شود (`_persist_disabled`) →
+     *     دیگر نه پرامپت انگلیسی و نه دستورات ترمینال/پایتون در نشست می‌آیند.
+     *  ۳. فقط نتیجهٔ نهاییِ هر اجرا به‌عنوانِ یک پیام دستیار در نشست نوشته می‌شود.
+     *
+     * فایلِ کامل (فشرده، ~۵۴ کیلوبایت) داخل APK تعبیه شده تا نیازی به دانلودِ
+     * دوبارهٔ ۷۶ مگابایتیِ rootfs نباشد. با [CRON_OVERLAY_MARKER] بودنِ
+     * نشانگر، عملیات روی هر اجرا یک‌بار و بی‌خطر است.
+     */
+    private fun applyCronOverlay(ctx: Context) {
+        val site = hermesSitePackages(ctx) ?: return
+        val file = File(site, "cron/scheduler.py")
+        if (!file.exists()) return
+        try {
+            val txt = file.readText()
+            // قبلاً اعمال شده → دست نزن
+            if (txt.contains(CRON_OVERLAY_MARKER)) return
+        } catch (t: Throwable) {
+            return
+        }
+        try {
+            // بازنویسی با نسخهٔ وصله‌شده از assets
+            ctx.assets.open("runtime/overlay/cron.scheduler.py.gz").use { input ->
+                java.util.zip.GZIPInputStream(input).use { gz ->
+                    file.outputStream().use { out -> gz.copyTo(out) }
+                }
+            }
+            // بایت‌کد کش‌شده بی‌اعتبار شود تا پایتون نسخهٔ قدیمی را اجرا نکند
+            runCatching {
+                File(file.parentFile, "__pycache__/scheduler.cpython-312.pyc").delete()
+            }
+            CrashLogger.breadcrumb("overlay کرون اعمال شد: نشست واحد و فقط نتیجهٔ نهایی")
+        } catch (t: Throwable) {
+            CrashLogger.breadcrumb("اعمال overlay کرون ناموفق: ${t.message}")
         }
     }
 
