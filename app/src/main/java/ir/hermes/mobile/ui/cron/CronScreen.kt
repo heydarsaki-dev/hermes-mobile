@@ -72,6 +72,30 @@ private fun fmtIso(s: String): String {
     return Jalali.format(m)
 }
 
+/** نمایش فارسی و خوانا برای زمان‌بندی خام سرور */
+private fun scheduleToPersian(raw: String): String {
+    val s = raw.trim()
+    if (s.isBlank()) return "—"
+    // every 30m / every 2h
+    Regex("^every\\s+(\\d+)\\s*([mh])$", RegexOption.IGNORE_CASE).find(s)?.let {
+        val n = it.groupValues[1]
+        return when (it.groupValues[2].lowercase()) {
+            "h" -> "هر $n ساعت"
+            else -> "هر $n دقیقه"
+        }
+    }
+    // 0 9 * * *  →  هر روز ساعت ۰۹:۰۰
+    val parts = s.split(Regex("\\s+"))
+    if (parts.size == 5 && parts[2] == "*" && parts[3] == "*" && parts[4] == "*") {
+        return "هر روز ساعت ${parts[1].padStart(2, '0')}:${parts[0].padStart(2, '0')}"
+    }
+    // 0 9 * * 1-5  →  روزهای هفته ساعت ۰۹:۰۰
+    if (parts.size == 5 && parts[2] == "*" && parts[3] == "*" && parts[4] != "*") {
+        return "روزهای هفته ساعت ${parts[1].padStart(2, '0')}:${parts[0].padStart(2, '0')}"
+    }
+    return s
+}
+
 /* ───────────────────────── صفحه ───────────────────────── */
 
 @OptIn(ExperimentalMaterial3Api::class)

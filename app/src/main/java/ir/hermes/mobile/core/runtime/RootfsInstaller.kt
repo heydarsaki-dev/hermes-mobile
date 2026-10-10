@@ -106,6 +106,12 @@ object RootfsInstaller {
      */
     private const val CRON_OVERLAY_MARKER = "HERMES_MOBILE_OVERLAY: stable-cron-session-v1"
 
+    /**
+     * نشانگرِ SOUL.md. وقتی این رشته در فایل موجود باشد، نسخهٔ هرمس موبایل
+     * قبلاً نصب شده و دوباره کاری لازم نیست.
+     */
+    private const val SOUL_MARKER = "HERMES_MOBILE_SOUL: careful-persian-v1"
+
     fun rootfsDir(ctx: Context): File = File(ctx.filesDir, "runtime/rootfs")
     fun binDir(ctx: Context): File = File(ctx.filesDir, "runtime/bin")
     fun libDir(ctx: Context): File = File(ctx.filesDir, "runtime/lib")
@@ -147,6 +153,7 @@ object RootfsInstaller {
         patchAgentWaitTimeout(ctx)
         patchContentPolicyPatterns(ctx)
         applyCronOverlay(ctx)
+        ensureSoulMd(ctx)
     }
 
     /**
@@ -288,6 +295,47 @@ object RootfsInstaller {
             CrashLogger.breadcrumb("overlay کرون اعمال شد: نشست واحد و فقط نتیجهٔ نهایی")
         } catch (t: Throwable) {
             CrashLogger.breadcrumb("اعمال overlay کرون ناموفق: ${t.message}")
+        }
+    }
+
+    /**
+     * جایگذاریِ SOUL.md هرمس موبایل در HERMES_HOME مهمان.
+     *
+     * هرمس `SOUL.md` موجود در `~/.hermes` را به‌عنوان «هویت» (اولین بخشِ پرامپت
+     * سیستمی) می‌خواند؛ اگر نباشد، هویتِ پیش‌فرضِ انگلیسی استفاده می‌شود.
+     *
+     * کاربر گزارش داده که پاسخ‌های هرمس «کلمات شکسته و حروف ناقص» دارند. ریشهٔ
+     * اصلی اکثر این موارد، خودِ مدل است (زبان فارسی برایش دشوارتر است) و درست‌ترین
+     * راه، هدایتِ صریحِ او در همان هویت است: بازبینیِ متن پیش از ارسال، کامل
+     * نوشتنِ کلمات، رعایت نیم‌فاصله و پاسخِ مستقیم. این دستورالعمل به همهٔ
+     * نوبت‌ها (چه چت زنده، چه کرون‌جاب) اعمال می‌شود چون بخشی از هویت است.
+     *
+     * فایل اصلیِ rootfs یه هویتِ کوتاهِ انگلیسی است؛ این جایگزینِ کامل، آن را
+     * با نسخهٔ دو زبانه تعویض می‌کند. با وجود [SOUL_MARKER] در فایل، عملیات
+     * روی هر اجرا یک‌بار و بی‌خطر است.
+     */
+    private fun ensureSoulMd(ctx: Context) {
+        val home = File(rootfsDir(ctx), "root/.hermes")
+        val file = File(home, "SOUL.md")
+        try {
+            if (file.exists()) {
+                val txt = file.readText()
+                // قبلاً جایگذاری شده → دست نزن (ممکن است کاربر آن را شخصی‌سازی کرده باشد)
+                if (txt.contains(SOUL_MARKER)) return
+            }
+        } catch (t: Throwable) {
+            return
+        }
+        try {
+            if (!home.exists()) home.mkdirs()
+            // فایل استخراج‌شده از tar ممکن است فقط‌خواندنی باشد
+            if (file.exists()) file.setWritable(true, false)
+            ctx.assets.open("runtime/soul/SOUL.md").use { input ->
+                file.outputStream().use { out -> input.copyTo(out) }
+            }
+            CrashLogger.breadcrumb("SOUL.md هرمس موبایل جایگذاری شد: دقت در فارسی‌نویسی")
+        } catch (t: Throwable) {
+            CrashLogger.breadcrumb("جایگذاری SOUL.md ناموفق: ${t.message}")
         }
     }
 
