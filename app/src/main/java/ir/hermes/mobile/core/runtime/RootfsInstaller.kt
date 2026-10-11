@@ -103,8 +103,43 @@ object RootfsInstaller {
     /**
      * نشانگرِ overlay کرون. وقتی این رشته در `cron/scheduler.py` موجود باشد،
      * نسخهٔ وصله‌شده قبلاً اعمال شده و دوباره کاری لازم نیست.
+     *
+     * نسخهٔ فعلی علاوه بر نشستِ واحد و فقط‌نتیجه، تابعِ `ensure_cron_session` را
+     * هم دارد تا نشست از همان لحظهٔ ساختِ کار و با عنوانِ درست وجود داشته باشد.
      */
-    private const val CRON_OVERLAY_MARKER = "HERMES_MOBILE_OVERLAY: stable-cron-session-v1"
+    private const val CRON_OVERLAY_MARKER = "HERMES_MOBILE_OVERLAY: ensure-cron-session-v1"
+
+    /**
+     * پایانِ [create_job] در `cron/jobs.py` هرمس ۰.۱۹.۰ — یگانه نویهٔ
+     * ثبتِ نشستِ کرون را اینجا اضافه می‌کنیم.
+     */
+    private const val CRON_CREATE_OLD =
+        "    with _jobs_lock():\n" +
+            "        jobs = load_jobs()\n" +
+            "        jobs.append(job)\n" +
+            "        save_jobs(jobs)\n" +
+            "\n" +
+            "    return job"
+
+    /**
+     * [CRON_CREATE_OLD] همراه با فراخوانِ [ensure_cron_session] تا نشستِ کرون از
+     * همان لحظهٔ ساختِ کار و با عنوانِ درست وجود داشته باشد — نه از نخستین اجرا.
+     */
+    private const val CRON_CREATE_NEW =
+        "    with _jobs_lock():\n" +
+            "        jobs = load_jobs()\n" +
+            "        jobs.append(job)\n" +
+            "        save_jobs(jobs)\n" +
+            "\n" +
+            "    # HERMES_MOBILE_OVERLAY: ensure-cron-session-v1\n" +
+            "    try:\n" +
+            "        from cron.scheduler import ensure_cron_session\n" +
+            "\n" +
+            "        ensure_cron_session(job.get(\"id\", \"\"), job.get(\"name\", \"\"), job.get(\"model\"))\n" +
+            "    except Exception:\n" +
+            "        logging.getLogger(__name__).debug(\"ensure_cron_session on create failed\", exc_info=True)\n" +
+            "\n" +
+            "    return job"
 
     /**
      * نشانگرِ SOUL.md. وقتی این رشته در فایل موجود باشد، نسخهٔ هرمس موبایل
@@ -153,6 +188,8 @@ object RootfsInstaller {
         patchAgentWaitTimeout(ctx)
         patchContentPolicyPatterns(ctx)
         applyCronOverlay(ctx)
+        // باید بعد از overlay باشد: از `ensure_cron_session` در scheduler وصله‌شده استفاده می‌کند
+        patchCronSessionOnCreate(ctx)
         ensureSoulMd(ctx)
     }
 
@@ -295,6 +332,41 @@ object RootfsInstaller {
             CrashLogger.breadcrumb("overlay کرون اعمال شد: نشست واحد و فقط نتیجهٔ نهایی")
         } catch (t: Throwable) {
             CrashLogger.breadcrumb("اعمال overlay کرون ناموفق: ${t.message}")
+        }
+    }
+
+    /**
+     * ایجادِ **فوریِ** نشستِ کرون هنگام افزودن کار.
+     *
+     * overlay کرون تابعِ `ensure_cron_session` را به `cron/scheduler.py` اضافه
+     * می‌کند، اما بدون فراخوان، نشست فقط در نخستین اجرا ساخته می‌شود — یعنی
+     * کاربر تا اولین اجرا یک نشستِ بی‌عنوان («بدون عنوان») می‌بیند که هیچ پیامی
+     * هم توش نیست.
+     *
+     * این ترمیمِ متنی، فراخوانِ `ensure_cron_session` را به پایانِ [create_job] در
+     * `cron/jobs.py` اضافه می‌کند تا نشست با شناسهٔ ثابتِ `cron_{job_id}` و
+     * عنوانِ درست، همان لحظهٔ ساختِ کار وجود داشته باشد. خطای نشست هرگز جلوی
+     * ساختِ کار را نمی‌گیرد (بلوک `try/except` در نسخهٔ وصله‌شده).
+     *
+     * مثل [patchAgentWaitTimeout] جایگزینیِ متنی است: نویهٔ [CRON_CREATE_OLD] در
+     * `create_job` یگانه است و اگر پیدا نشد (نسخهٔ دیگر هرمس) فایل دست‌نخورده
+     * می‌ماند تا چیزی خراب نشود.
+     */
+    private fun patchCronSessionOnCreate(ctx: Context) {
+        val file = File(hermesSitePackages(ctx) ?: return, "cron/jobs.py")
+        if (!file.exists()) return
+        try {
+            val txt = file.readText()
+            // قبلاً وصله شده یا ساختار عوض شده → دست نزن
+            if (txt.contains(CRON_OVERLAY_MARKER) || !txt.contains(CRON_CREATE_OLD)) return
+            file.writeText(txt.replace(CRON_CREATE_OLD, CRON_CREATE_NEW))
+            // بایت‌کد کش‌شده بی‌اعتبار شود تا پایتون نسخهٔ قدیمی را اجرا نکند
+            runCatching {
+                File(file.parentFile, "__pycache__/jobs.cpython-312.pyc").delete()
+            }
+            CrashLogger.breadcrumb("ترمیم jobs.py: نشست کرون هنگام ساختِ کار ساخته می‌شود")
+        } catch (t: Throwable) {
+            CrashLogger.breadcrumb("ترمیم jobs.py ناموفق: ${t.message}")
         }
     }
 

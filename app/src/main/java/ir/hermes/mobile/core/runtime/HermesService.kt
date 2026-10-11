@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import ir.hermes.mobile.core.notify.CronNotifier
 import ir.hermes.mobile.MainActivity
 import ir.hermes.mobile.R
 import kotlinx.coroutines.CoroutineScope
@@ -19,7 +20,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -37,6 +40,9 @@ import kotlinx.coroutines.launch
  *    بیدار بماند و دستوراتِ طولانی (ترمینال، جست‌وجو، build) بدون توقف اجرا شوند.
  * ۳. وضعیت سرور را زیر نظر دارد؛ هرگاه سرور واقعاً متوقف شد، سرویس هم تمام
  *    می‌شود تا نوتیفیکیشنِ بی‌مورد روی صفحه نماند.
+ * ۴. هر ۶۰ ثانیه نتایجِ کرون‌جاب‌ها را می‌خواند و اگر خبری تازه رسیده باشد،
+ *    روی کانالِ نوتیفیکیشنِ همانِ کار نوتیفیکیشن می‌فرستد — هم وقتی اپ باز
+ *    است و هم وقتی در پس‌زمینه.
  *
  * چرخهٔ کامل در [HermesRuntime.start] شروع و در [HermesRuntime.stop] تمام می‌شود.
  */
@@ -44,6 +50,7 @@ class HermesService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var watcher: Job? = null
+    private var cronPoller: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -65,6 +72,17 @@ class HermesService : Service() {
                     }
                     else -> notifyRunning(snap.message.ifBlank { "سرور هرمس آماده است" })
                 }
+            }
+        }
+        // نشست‌های کرون هر ۶۰ ثانیه برای نوتیفیکیشن بررسی می‌شوند. فاصلهٔ ۶۰
+        // ثانیه به‌خاطر padding کرونِ دقیقه‌ای است: هم هزینهٔ باتری را پایین
+        // نگه می‌دارد و هم هیچ نتیجه‌ای را از قلم نمی‌اندازد (نتیجه در نشست
+        // می‌ماند و فقط جلوی چشم کاربر پنهان شده بود).
+        cronPoller = scope.launch {
+            while (isActive) {
+                runCatching { CronNotifier.poll(applicationContext) }
+                    .onFailure { Log.w(TAG, "cron poll failed", it) }
+                delay(CRON_POLL_INTERVAL_MS)
             }
         }
     }
@@ -116,6 +134,7 @@ class HermesService : Service() {
 
     override fun onDestroy() {
         watcher?.cancel()
+        cronPoller?.cancel()
         scope.cancel()
         releaseWakeLock()
         super.onDestroy()
@@ -136,6 +155,15 @@ class HermesService : Service() {
         private const val TAG = "HermesService"
         private const val CHANNEL_ID = "hermes_server"
         private const val NOTIF_ID = 9119
+
+        /**
+         * فاصلهٔ بررسیِ نتایجِ کرون برای نوتیفیکیشن.
+         *
+         * ۶۰ ثانیه: کافی است که هیچ نتیجه‌ای دیده نشود (نتیجه در نشست می‌ماند)
+         * و هم برای کرون‌هایی که «هر چند دقیقه» تنظیم شده‌اند پاسخ‌گو است.
+         * کوتاه‌تر از این (مثلاً ۱۰ ثانیه) باتری و داده را بی‌دلیل می‌سوزاند.
+         */
+        private const val CRON_POLL_INTERVAL_MS = 60_000L
 
         /** شروعِ سرویس پیش‌زمینه (اگر از قبل روشن است، بی‌اثر است). */
         fun start(ctx: Context) {

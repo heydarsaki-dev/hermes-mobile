@@ -1,5 +1,10 @@
 package ir.hermes.mobile.ui.cron
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -20,11 +25,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import ir.hermes.mobile.core.notify.CronNotifier
 import ir.hermes.mobile.core.util.Jalali
 import ir.hermes.mobile.data.HermesRepo
 import ir.hermes.mobile.data.J
@@ -72,13 +80,13 @@ private fun fmtIso(s: String): String {
     return Jalali.format(m)
 }
 
-/** نمایش فارسی و خوانا برای زمان‌بندی خام سرور */
+/** نمایش فارسی و خوانا برای زمان‌بندی خام سرور (ارقام هم فارسی می‌شوند). */
 private fun scheduleToPersian(raw: String): String {
     val s = raw.trim()
     if (s.isBlank()) return "—"
     // every 30m / every 2h
     Regex("^every\\s+(\\d+)\\s*([mh])$", RegexOption.IGNORE_CASE).find(s)?.let {
-        val n = it.groupValues[1]
+        val n = Jalali.fa(it.groupValues[1])
         return when (it.groupValues[2].lowercase()) {
             "h" -> "هر $n ساعت"
             else -> "هر $n دقیقه"
@@ -87,13 +95,14 @@ private fun scheduleToPersian(raw: String): String {
     // 0 9 * * *  →  هر روز ساعت ۰۹:۰۰
     val parts = s.split(Regex("\\s+"))
     if (parts.size == 5 && parts[2] == "*" && parts[3] == "*" && parts[4] == "*") {
-        return "هر روز ساعت ${parts[1].padStart(2, '0')}:${parts[0].padStart(2, '0')}"
+        return "هر روز ساعت ${Jalali.fa(parts[1].padStart(2, '0'))}:${Jalali.fa(parts[0].padStart(2, '0'))}"
     }
     // 0 9 * * 1-5  →  روزهای هفته ساعت ۰۹:۰۰
     if (parts.size == 5 && parts[2] == "*" && parts[3] == "*" && parts[4] != "*") {
-        return "روزهای هفته ساعت ${parts[1].padStart(2, '0')}:${parts[0].padStart(2, '0')}"
+        return "روزهای هفته ساعت ${Jalali.fa(parts[1].padStart(2, '0'))}:${Jalali.fa(parts[0].padStart(2, '0'))}"
     }
-    return s
+    // عبارت دستی: ارقام لاتین به فارسی تبدیل می‌شوند، خودِ عبارت دست‌نخورده می‌ماند.
+    return s.map { ch -> if (ch.isDigit()) Jalali.fa(ch.toString()) else ch.toString() }.joinToString("")
 }
 
 /* ───────────────────────── صفحه ───────────────────────── */
@@ -102,16 +111,44 @@ private fun scheduleToPersian(raw: String): String {
 @Composable
 fun CronScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
     var items by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var adding by remember { mutableStateOf(false) }
 
+    // مجوزِ نوتیفیکیشن (اندروید ۱۳+) برای کانالِ هر کرون. یک بار درخواست
+    // می‌شود؛ اگر کاربر رد کرد، نوتیفیکیشن نمی‌آید ولی بقیهٔ صفحه بی‌خطر کار
+    // می‌کند (کارها در قابلیت‌های کرون اثری ندارد).
+    val askNotif = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            askNotif.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     suspend fun load() {
         loading = true; error = null
         HermesRepo.cronList()
-            .onSuccess { r -> items = J.listOf(J.obj(r), "jobs", "items", "cron").map { J.obj(it) } }
+            .onSuccess { r ->
+                items = J.listOf(J.obj(r), "jobs", "items", "cron").map { J.obj(it) }
+                // کاربر خودش این فهرست را می‌بیند؛ شمارش‌ها را بی‌صدا جلو
+                // می‌بریم تا خبرهای همین حالا روی صفحه بعداً دو بار (یکی به
+                // شکل نوتیفیکیشن) به کاربر نرسند.
+                CronNotifier.markViewed(
+                    ctx,
+                    items.associate { c ->
+                        val id = J.str(c, "job_id", J.str(c, "name", J.str(c, "id")))
+                        id to J.str(c, "name").ifBlank { id }
+                    },
+                )
+            }
             .onFailure { error = it.message }
         loading = false
     }
@@ -185,7 +222,11 @@ private fun JobCard(c: JsonObject, reload: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Schedule, null, Modifier.size(14.dp), tint = Cyan)
             Spacer(Modifier.width(6.dp))
-            Text(schedule, style = MaterialTheme.typography.bodySmall, color = Cyan, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+            Text(
+                scheduleToPersian(schedule),
+                style = MaterialTheme.typography.bodySmall,
+                color = Cyan,
+            )
         }
         if (prompt.isNotBlank()) {
             Spacer(Modifier.height(6.dp))
@@ -196,9 +237,21 @@ private fun JobCard(c: JsonObject, reload: () -> Unit) {
             InfoText("اجرای بعدی", if (paused) "—" else fmtIso(nextRun))
             InfoText("اجرای آخر", if (lastRun.isBlank()) "—" else fmtIso(lastRun))
         }
-        if (lastStatus.isNotBlank() && lastStatus != "ok") {
-            Spacer(Modifier.height(4.dp))
-            Text("آخرین وضعیت: $lastStatus", style = MaterialTheme.typography.labelSmall, color = Rose)
+        // وضعیت همیشه نمایان است: تا اولین اجرا هیچ چیزی گزارش نشده و نباید
+        // کاربر فکر کند چیزی خراب است.
+        val (statusLabel, statusColor) = when {
+            lastStatus.isBlank() -> "منتظر اجرای اول" to TextMid
+            lastStatus == "ok" -> "موفق" to Lime
+            else -> lastStatus to Rose
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "آخرین وضعیت: ",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextLow,
+            )
+            Text(statusLabel, style = MaterialTheme.typography.labelSmall, color = statusColor)
         }
         Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
@@ -389,8 +442,8 @@ private fun AddJobSheet(onDismiss: () -> Unit, onCreated: (String) -> Unit) {
                         HermesRepo.cronCreate(name.ifBlank { prompt.trim().take(30).ifBlank { "کار" } }, sched, prompt.trim())
                             .onSuccess { r ->
                                 busy = false
-                                val msg = J.str(J.obj(r), "message").ifBlank { "کار ساخته شد." }
-                                onCreated(msg)
+                                // پیام سرور انگلیسی است؛ پیام ثابتِ فارسی نشان بده
+                                onCreated("کار زمان‌بندی‌شده ساخته شد")
                             }
                             .onFailure { e ->
                                 err = e.message ?: "خطا در ساخت کار"
