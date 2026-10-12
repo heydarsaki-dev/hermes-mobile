@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.map
 private val Context.dataStore by preferencesDataStore("hermes_settings")
 
 data class ServerConfig(
-    val url: String = "http://127.0.0.1:8080",
+    val url: String = "http://127.0.0.1:9119",
     val token: String = "",
     val connected: Boolean = false,
 )
@@ -43,7 +43,7 @@ class SettingsStore(private val ctx: Context) {
 
     val config: Flow<ServerConfig> = ctx.dataStore.data.map {
         ServerConfig(
-            url = it[Keys.URL] ?: "http://127.0.0.1:8080",
+            url = it[Keys.URL] ?: "http://127.0.0.1:9119",
             token = it[Keys.TOKEN] ?: "",
             connected = it[Keys.SAVED] ?: false,
         )
@@ -74,6 +74,10 @@ class SettingsStore(private val ctx: Context) {
     }
 
     suspend fun clear() {
-        ctx.dataStore.edit { it[Keys.SAVED] = false }
+        ctx.dataStore.edit {
+            it[Keys.URL] = ""
+            it[Keys.TOKEN] = ""
+            it[Keys.SAVED] = false
+        }
     }
 }

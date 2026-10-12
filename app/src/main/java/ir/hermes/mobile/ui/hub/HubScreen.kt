@@ -29,7 +29,6 @@ data class HubItem(val route: String, val title: String, val sub: String, val ic
 fun HubScreen(
     status: RpcEvent.State,
     sessionId: String,
-    chatTitle: String,
     onGo: (String) -> Unit,
 ) {
     val items = remember {
@@ -67,7 +66,7 @@ fun HubScreen(
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            if (chatTitle.isBlank()) "به هرمس خوش آمدید" else chatTitle,
+            "به هرمس خوش آمدید",
             style = MaterialTheme.typography.bodySmall, color = TextLow, maxLines = 1,
         )
         Spacer(Modifier.height(18.dp))

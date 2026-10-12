@@ -33,7 +33,7 @@ fun ConnectScreen(onConnected: () -> Unit) {
     val scope = rememberCoroutineScope()
     // آدرس/توکن فقط وضعیت درونیِ اتصال لوکال را نگه می‌دارند؛ فیلد دستی
     // برای کاربر وجود ندارد چون همیشه روی ۱۲۷.۰.۰.۱ همین گوشی است.
-    var url by remember { mutableStateOf(HermesRepo.api.baseUrl.ifBlank { "http://127.0.0.1:8080" }) }
+    var url by remember { mutableStateOf(HermesRepo.api.baseUrl.ifBlank { "http://127.0.0.1:9119" }) }
     var token by remember { mutableStateOf(HermesRepo.api.token) }
     var testing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }

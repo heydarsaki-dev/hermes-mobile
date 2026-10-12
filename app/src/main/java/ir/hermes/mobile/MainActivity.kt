@@ -198,7 +198,7 @@ private fun Root() {
                         .graphicsLayer { alpha = fade.value }
                 ) {
                     when (shown) {
-                        "hub" -> HubScreen(status, sid, "", onGo = { route = it })
+                        "hub" -> HubScreen(status, sid, onGo = { route = it })
                         "chat" -> ChatScreen(
                             engine = engine,
                             title = chatTitle,
@@ -251,7 +251,7 @@ private fun Root() {
                             route = ""
                             ready = false
                         }
-                        else -> HubScreen(status, sid, "", onGo = { route = it })
+                        else -> HubScreen(status, sid, onGo = { route = it })
                     }
                 }
                 if (route == "hub") HubBar(route) { route = it }

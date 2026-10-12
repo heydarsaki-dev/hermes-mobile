@@ -53,7 +53,7 @@ private enum class CronKind(val label: String) {
 /** تبدیل ورودی‌های فرم به رشتهٔ زمان‌بندیِ قابل فهم برای سرور */
 private fun buildSchedule(kind: CronKind, n: Int, hour: Boolean, hh: String, mm: String, expr: String): String = when (kind) {
     CronKind.EVERY -> "every $n${if (hour) "h" else "m"}"
-    CronKind.ONCE -> "$n${if (hour) "h" else "m"}"
+    CronKind.ONCE -> "once:${n}${if (hour) "h" else "m"}"
     CronKind.DAILY -> "${mm.padStart(2, '0')} ${hh.padStart(2, '0')} * * *"
     CronKind.WEEKDAYS -> "${mm.padStart(2, '0')} ${hh.padStart(2, '0')} * * 1-5"
     CronKind.CUSTOM -> expr.trim()

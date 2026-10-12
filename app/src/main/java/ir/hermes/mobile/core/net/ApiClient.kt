@@ -41,7 +41,7 @@ class ApiClient(
     private val safeBase: String
         get() {
             var b = baseUrl.trim().trimEnd('/')
-            if (b.isBlank()) b = "http://127.0.0.1:8080"
+            if (b.isBlank()) b = "http://127.0.0.1:9119"
             if (!b.startsWith("http://", true) && !b.startsWith("https://", true)) b = "http://$b"
             return b
         }

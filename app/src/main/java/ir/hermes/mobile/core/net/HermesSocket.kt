@@ -104,9 +104,15 @@ class HermesSocket(
     }
 
     private fun parse(text: String) {
-        runCatching {
-            val root = Json.parseToJsonElement(text).jsonObject
-            if (root["method"]?.jsonPrimitive?.content == "event") {
+        val root = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrElse {
+            onLog("خطای تجزیه: ${it.message}")
+            return
+        }
+        // `method` ممکن است عدد یا آبجکت باشد یا اصلاً نباشد؛ contentOrNull تحمل‌پذیر است
+        val isEvent = runCatching { root["method"]?.jsonPrimitive?.contentOrNull == "event" }
+            .getOrDefault(false)
+        if (isEvent) {
+            runCatching {
                 val p = root["params"]?.jsonObject ?: JsonObject(emptyMap())
                 val type = p["type"]?.jsonPrimitive?.content ?: "unknown"
                 val payload = p["payload"]?.jsonObject ?: JsonObject(emptyMap())
@@ -120,15 +126,26 @@ class HermesSocket(
                         ?.let { sessionKey = it }
                 }
                 _events.tryEmit(RpcEvent.Event(type, payload, sid))
-            } else {
-                val id = root["id"]?.jsonPrimitive?.contentOrNull ?: return
-                val err = root["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
-                val res = root["result"]
-                val response = RpcEvent.Response(id, res, err)
-                awaiters.remove(id)?.complete(response)
-                _events.tryEmit(response)
+            }.onFailure { onLog("خطای تجزیهٔ رویداد: ${it.message}") }
+            return
+        }
+        // پاسخِ یک درخواست. `id` باید همیشه استخراج شود، وگرنه منتظرشونده
+        // برای همیشه ناقص می‌ماند و فراخوان در «در حال فکر کردن» گیر می‌کند.
+        val id = runCatching { root["id"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+        if (id == null) {
+            onLog("پاسخ بدون شناسه رسید: ${text.take(200)}")
+            return
+        }
+        val response = runCatching {
+            // خطا ممکن است آبجکتِ {"message": ...} باشد یا یک رشته/عددِ ساده؛ هر دو پذیرفته می‌شوند
+            val err = root["error"]?.let { e ->
+                runCatching { e.jsonObject["message"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+                    ?: runCatching { e.jsonPrimitive.contentOrNull }.getOrNull()
             }
-        }.onFailure { onLog("خطای تجزیه: ${it.message}") }
+            RpcEvent.Response(id, root["result"], err)
+        }.getOrElse { RpcEvent.Response(id, null, "خطای تجزیهٔ پاسخ: ${it.message}") }
+        awaiters.remove(id)?.complete(response)
+        _events.tryEmit(response)
     }
 
     /** ارسال درخواست JSON-RPC و برگرداندن شناسه */
@@ -150,6 +167,13 @@ class HermesSocket(
         params: JsonObject = JsonObject(emptyMap()),
         timeoutMs: Long = 30_000,
     ): RpcEvent.Response {
+        // شکستِ زودهنگام: بدون اتصالِ زنده، ارسال بی‌فایده است و منتظرشونده
+        // فقط روی تایم‌اوتِ ۳۰ ثانیه‌ای تمام می‌شد. قبل از ثبتِ منتظرشونده خطا می‌دهیم.
+        val s = socket
+        if (s == null || _status.value != RpcEvent.State.CONNECTED) {
+            onLog("callAwait روی سوکتِ متصل نبود (state=${_status.value})")
+            throw IllegalStateException("اتصال برقرار نیست (وضعیت: ${_status.value})")
+        }
         val id = ids.incrementAndGet().toString()
         val deferred = CompletableDeferred<RpcEvent.Response>()
         awaiters[id] = deferred
@@ -157,7 +181,7 @@ class HermesSocket(
             val msg = buildJsonObject {
                 put("jsonrpc", "2.0"); put("id", id); put("method", method); put("params", params)
             }
-            socket?.send(msg.toString())
+            s.send(msg.toString())
             return withTimeout(timeoutMs) { deferred.await() }
         } finally {
             awaiters.remove(id)
@@ -194,5 +218,12 @@ class HermesSocket(
         socket?.send(msg.toString())
     }
 
-    fun disconnect() { socket?.close(1000, "bye"); socket = null; _status.value = RpcEvent.State.CLOSED }
+    fun disconnect() {
+        // بستنِ سوکت ممکن است خودش خطا دهد (مثلاً سوکت از قبل بسته شده)؛
+        // خطا را جمع می‌کنیم تا قطعِ اتصال هرگز استثنا پرتاب نکند.
+        runCatching { socket?.close(1000, "bye") }
+        socket = null
+        sessionId = ""
+        _status.value = RpcEvent.State.CLOSED
+    }
 }
