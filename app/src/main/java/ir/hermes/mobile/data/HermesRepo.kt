@@ -45,6 +45,7 @@ object HermesRepo {
     private const val CACHE_SESSIONS = "sessions"
     private const val CACHE_MODEL_OPTIONS = "model_options"
     private const val CACHE_ENDPOINTS = "endpoints"
+    private const val CACHE_ENDPOINT_MODELS = "endpoint_models"
 
     val logLines = MutableStateFlow<List<String>>(emptyList())
 
@@ -392,6 +393,69 @@ object HermesRepo {
 
     suspend fun deleteCustomEndpoint(id: String): Result<JsonElement> =
         api.call("/api/providers/custom-endpoints/${enc(id)}", "DELETE")
+
+    // ---------- ورود OAuth پرووایدرها (Nous Portal، OpenAI Codex، …) ----------
+
+    /**
+     * فهرست پرووایدرهایی که ورود OAuth دارند، همراه وضعیت ورود.
+     * پاسخ: `{providers: [{id, name, flow, status: {logged_in, ...}}, …]}`
+     */
+    suspend fun oauthProviders(): Result<JsonElement> = api.call("/api/providers/oauth")
+
+    /**
+     * آغاز جریان «کد دستگاه» برای یک پرووایدر OAuth.
+     *
+     * پاسخ برای `nous`: `{session_id, flow: "device_code", user_code,
+     * verification_url, expires_in, poll_interval}`. سرور یک رشتهٔ پس‌زمینه
+     * راه می‌اندازد که تا تأیید کاربر، توکن را می‌گیرد و ذخیره می‌کند.
+     */
+    suspend fun oauthStart(providerId: String): Result<JsonElement> =
+        api.call("/api/providers/oauth/${enc(providerId)}/start", "POST", JsonObject(emptyMap()))
+
+    /** وضعیت یک نشست ورود: `status` یکی از pending|approved|denied|expired|error. */
+    suspend fun oauthPoll(providerId: String, sessionId: String): Result<JsonElement> =
+        api.call("/api/providers/oauth/${enc(providerId)}/poll/${enc(sessionId)}")
+
+    /** لغو یک نشست ورودِ در جریان. */
+    suspend fun oauthCancel(sessionId: String): Result<JsonElement> =
+        api.call("/api/providers/oauth/sessions/${enc(sessionId)}", "DELETE")
+
+    /** قطع اتصال پرووایدر OAuth (پاک‌کردن توکن‌های ذخیره‌شده). */
+    suspend fun oauthDisconnect(providerId: String): Result<JsonElement> =
+        api.call("/api/providers/oauth/${enc(providerId)}", "DELETE")
+
+    /**
+     * مدل پیشنهادیِ پیش‌فرض بعد از ورود به یک پرووایدر.
+     * برای `nous` سطح رایگان/پرداختی کاربر رعایت می‌شود؛ پاسخ `{provider, model, free_tier}`.
+     */
+    suspend fun recommendedDefault(provider: String): Result<JsonElement> =
+        api.call("/api/model/recommended-default?provider=${enc(provider)}")
+
+    /**
+     * نگه‌داشتن فهرست مدل‌هایی که کاربر موقع افزودن پرووایدر از endpoint
+     * دریافت کرده است.
+     *
+     * سرور فقط «مدل پیش‌فرض» را در تنظیمات پرووایدر ذخیره می‌کند و فهرست کامل
+     * را نگه نمی‌دارد؛ پس اگر اینجا ذخیره نشود، بعد از بستن دیالوگ فهرست از
+     * دست می‌رود و کاربر نمی‌تواند بین بقیهٔ مدل‌ها جابه‌جا شود.
+     */
+    fun saveEndpointModels(id: String, models: List<String>) {
+        val clean = models.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (id.isBlank() || clean.isEmpty()) return
+        val cur = (cache.get(CACHE_ENDPOINT_MODELS) as? JsonObject) ?: JsonObject(emptyMap())
+        cache.put(
+            CACHE_ENDPOINT_MODELS,
+            JsonObject(cur + (id to JsonArray(clean.map { JsonPrimitive(it) }))),
+        )
+    }
+
+    /** فهرست مدل‌های دریافت‌شدهٔ یک endpoint که قبلاً محلی ذخیره شده است. */
+    fun cachedEndpointModels(id: String): List<String> {
+        if (id.isBlank()) return emptyList()
+        val o = cache.get(CACHE_ENDPOINT_MODELS) as? JsonObject ?: return emptyList()
+        return J.arr(o[id]).mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }
+            .filter { it.isNotBlank() }
+    }
 
     /**
      * انتخاب مدل برای اسلات اصلی (REST داشبورد). برای پرووایدرهای سفارشی

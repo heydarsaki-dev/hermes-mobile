@@ -18,6 +18,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -26,6 +29,7 @@ import ir.hermes.mobile.data.HermesRepo
 import ir.hermes.mobile.data.J
 import ir.hermes.mobile.ui.components.*
 import ir.hermes.mobile.ui.theme.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -52,10 +56,13 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
     var currentModel by remember { mutableStateOf("") }
     var providers by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
     var endpoints by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
+    // پرووایدرهای ورود OAuth (Nous Portal و…) به‌همراه وضعیت ورودشان.
+    var oauthProviders by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
 
     var showAdd by remember { mutableStateOf(false) }
     var addModelTarget by remember { mutableStateOf<JsonObject?>(null) }
     var keyTarget by remember { mutableStateOf<Pair<String, String>?>(null) } // slug to displayName
+    var nousLogin by remember { mutableStateOf(false) }
 
     /** اعمالِ گزینهٔ مدل‌ها روی state صفحه (هم برای دادهٔ کش، هم برای دادهٔ تازه). */
     fun applyOptions(o: JsonObject) {
@@ -65,12 +72,28 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
             .filter { !J.bool(it, "is_user_defined") && J.str(it, "slug").lowercase() != "custom" }
     }
 
+    /**
+     * ادغام مدل‌های دریافت‌شدهٔ محلی با مدل‌های ثبت‌شدهٔ سرور.
+     *
+     * سرور فقط مدل پیش‌فرض هر endpoint را در تنظیمات نگه می‌دارد؛ فهرستی که
+     * کاربر با «دریافت مدل‌ها» دیده بود محلی ذخیره می‌شود تا بعداً هم بتواند
+     * بین همان مدل‌ها جابه‌جا شود.
+     */
+    fun withCachedModels(list: List<JsonObject>): List<JsonObject> = list.map { o ->
+        val extra = HermesRepo.cachedEndpointModels(J.str(o, "id"))
+        if (extra.isEmpty()) o
+        else {
+            val merged = (jsonStrings(J.listOf(o, "models")) + extra).distinct()
+            JsonObject(o + ("models" to JsonArray(merged.map { JsonPrimitive(it) })))
+        }
+    }
+
     suspend fun load(refresh: Boolean = false) {
         // ابتدا دادهٔ کش‌شده را فوری نمایش می‌دهیم تا کاربر منتظر سرور
         // نماند؛ سپس در پس‌زمینه از هرمس تازه‌سازی می‌کنیم.
         val fromCache = if (!refresh) {
             HermesRepo.cachedModelOptions()?.also { applyOptions(it) }
-            HermesRepo.cachedEndpoints()?.let { endpoints = it.map { J.obj(it) } }
+            HermesRepo.cachedEndpoints()?.let { endpoints = withCachedModels(it.map { J.obj(it) }) }
         } else null
         // اگر کشی نبود (اولین بازدید)، حالتِ بارگذاری را نشان می‌دهیم تا
         // پیامِ «پرووایدری یافت نشد» به‌اشتباه نمایش داده نشود.
@@ -80,8 +103,16 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
             .onSuccess { r -> applyOptions(J.obj(r)) }
             .onFailure { error = it.message }
         HermesRepo.customEndpoints()
-            .onSuccess { r -> endpoints = J.listOf(J.obj(r), "endpoints").map { J.obj(it) } }
+            .onSuccess { r ->
+                endpoints = withCachedModels(J.listOf(J.obj(r), "endpoints").map { J.obj(it) })
+            }
         loading = false
+        // وضعیت OAuth جدا و بعد از نمایش فهرست می‌آید؛ چون سرور ممکن است برای
+        // خواندن وضعیت Nous با پورتال صحبت کند و نباید صفحه را معطل کند.
+        HermesRepo.oauthProviders()
+            .onSuccess { r ->
+                oauthProviders = J.listOf(J.obj(r), "providers").map { J.obj(it) }
+            }
     }
 
     /**
@@ -156,6 +187,28 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
                     SmallTextButton("افزودن پرووایدر جدید") { showAdd = true }
                 }
             }
+            // ورود با Nous Portal (OAuth کد دستگاه) — جدا از کارت‌های پرووایدر
+            // می‌آید چون ورودش با کلید API نیست و باید جلوتر و پررنگ‌تر دیده شود.
+            // عمداً همیشه نمایش داده می‌شود؛ اگر فهرست OAuth دیر برسد یا خطا
+            // بدهد، کاربر باز هم می‌تواند دکمهٔ ورود را ببیند.
+            item("nous") {
+                NousPortalCard(
+                    info = oauthProviders.firstOrNull { J.str(it, "id") == "nous" }
+                        ?: JsonObject(emptyMap()),
+                    nousModels = providers.firstOrNull { J.str(it, "slug") == "nous" }
+                        ?.let { jsonStrings(J.listOf(it, "models")) } ?: emptyList(),
+                    isActive = currentProvider == "nous",
+                    onLogin = { nousLogin = true },
+                    onSelectModel = { m -> applyMain("nous", m) },
+                    onLogout = {
+                        scope.launch {
+                            HermesRepo.oauthDisconnect("nous")
+                                .onSuccess { load(refresh = true) }
+                                .onFailure { error = it.message }
+                        }
+                    },
+                )
+            }
             if (providers.isEmpty() && !loading) {
                 item("providers-empty") {
                     EmptyState("پرووایدر شناخته‌شده‌ای یافت نشد — یکی بسازید", Icons.Default.CloudOff)
@@ -226,6 +279,7 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
                 HermesRepo.clearSession(); onModelChanged()
                 scope.launch { load(refresh = true) }
             },
+            onNousLogin = { showAdd = false; nousLogin = true },
         )
     }
 
@@ -243,6 +297,27 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
             title = name,
             onDismiss = { keyTarget = null },
             onSaved = { keyTarget = null; scope.launch { load(refresh = true) } },
+        )
+    }
+
+    if (nousLogin) {
+        NousLoginDialog(
+            onDismiss = { nousLogin = false },
+            onLoggedIn = {
+                nousLogin = false
+                scope.launch {
+                    // بعد از ورود، هرمس مدل پیشنهادیِ مناسب (رایگان/پرداختی) را
+                    // خودش انتخاب می‌کند؛ بعد هم کاربر می‌تواند از کارت Nous
+                    // بین بقیهٔ مدل‌ها جابه‌جا شود.
+                    val rec = HermesRepo.recommendedDefault("nous").getOrNull()
+                    val m = rec?.let { J.str(J.obj(it), "model") }.orEmpty()
+                    if (m.isNotBlank()) {
+                        HermesRepo.applyModel("nous", m)
+                        onModelChanged()
+                    }
+                    load(refresh = true)
+                }
+            },
         )
     }
 }
@@ -337,6 +412,213 @@ private fun CanonicalProviderCard(
     }
 }
 
+/**
+ * کارت اختصاصی «Nous Portal».
+ *
+ * Nous با کلید API ساده کار نمی‌کند و ورودش OAuth «کد دستگاه» است؛ برای همین
+ * جدا از کارت‌های پرووایدر می‌آید تا جای ورود گم نشود.
+ */
+@Composable
+private fun NousPortalCard(
+    info: JsonObject,
+    nousModels: List<String>,
+    isActive: Boolean,
+    onLogin: () -> Unit,
+    onSelectModel: (String) -> Unit,
+    onLogout: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(true) }
+    val status = J.obj(info["status"])
+    val loggedIn = J.bool(status, "logged_in")
+    val source = J.str(status, "source_label", "Nous Portal")
+    val token = J.str(status, "token_preview")
+
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable { expanded = !expanded }
+            .padding(14.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(loggedIn, if (loggedIn) Lime else TextLow)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Nous Portal", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (loggedIn) "وارد شده‌اید" else "وارد نشده‌اید",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (loggedIn) Lime else TextLow,
+                )
+                if (loggedIn && source.isNotBlank()) {
+                    Text(
+                        if (token.isNotBlank()) "$source — $token" else source,
+                        style = MaterialTheme.typography.bodySmall, color = TextLow, maxLines = 1,
+                    )
+                }
+            }
+            if (isActive) Pill("فعال", Gold)
+            Spacer(Modifier.width(6.dp))
+            Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = TextLow)
+        }
+        if (expanded) {
+            Spacer(Modifier.height(10.dp))
+            if (!loggedIn) {
+                Text(
+                    "با حساب Nous Research وارد شوید تا از مدل‌های آن استفاده کنید. هرمس یک کد به شما می‌دهد و شما آن را در صفحهٔ Nous وارد می‌کنید.",
+                    style = MaterialTheme.typography.bodySmall, color = TextMid,
+                )
+                Spacer(Modifier.height(10.dp))
+                PrimaryButton("ورود با Nous", onLogin, Modifier.fillMaxWidth(), icon = Icons.Default.Login)
+            } else {
+                Text("مدل‌های Nous", style = MaterialTheme.typography.labelMedium, color = TextMid)
+                Spacer(Modifier.height(4.dp))
+                ModelList(
+                    nousModels, onSelectModel,
+                    "فهرست مدل‌ها هنوز نیامده — بالا «تازه‌سازی» را بزنید",
+                    limit = 20,
+                )
+                Spacer(Modifier.height(10.dp))
+                GhostButton("خروج از حساب", onLogout, Modifier.fillMaxWidth(), color = Rose, icon = Icons.Default.Logout)
+            }
+        }
+    }
+}
+
+/**
+ * دیالوگ ورود به Nous Portal با جریان «کد دستگاه».
+ *
+ * ۱) سرور کد و نشانی تأیید را می‌سازد؛ ۲) کاربر کد را در صفحهٔ Nous وارد
+ * می‌کند؛ ۳) اپ هر دو ثانیه وضعیت را می‌پرسد تا «approved» شود. توکن‌ها
+ * سمت سرور ذخیره می‌شوند و اپ فقط وضعیت را می‌بیند.
+ */
+@Composable
+private fun NousLoginDialog(onDismiss: () -> Unit, onLoggedIn: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
+    val uri = LocalUriHandler.current
+    var phase by remember { mutableStateOf("starting") } // starting|waiting|done|error
+    var userCode by remember { mutableStateOf("") }
+    var verifyUrl by remember { mutableStateOf("") }
+    var sessionId by remember { mutableStateOf("") }
+    var message by remember { mutableStateOf<String?>(null) }
+    var copied by remember { mutableStateOf(false) }
+
+    fun start() {
+        phase = "starting"; message = null; sessionId = ""
+        scope.launch {
+            HermesRepo.oauthStart("nous")
+                .onSuccess { r ->
+                    val o = J.obj(r)
+                    sessionId = J.str(o, "session_id")
+                    userCode = J.str(o, "user_code")
+                    verifyUrl = J.str(o, "verification_url")
+                    phase = "waiting"
+                }
+                .onFailure {
+                    message = it.message ?: "آغاز ورود ناموفق بود"
+                    phase = "error"
+                }
+        }
+    }
+
+    fun cancel() {
+        if (sessionId.isNotBlank()) scope.launch { HermesRepo.oauthCancel(sessionId) }
+    }
+
+    LaunchedEffect(Unit) { start() }
+
+    // کد دستگاه معمولاً چند ثانیه‌ای تأیید می‌شود؛ تا ۱۵ دقیقه صبر می‌کنیم.
+    LaunchedEffect(phase, sessionId) {
+        if (phase != "waiting" || sessionId.isBlank()) return@LaunchedEffect
+        var tries = 0
+        while (phase == "waiting" && tries < 450) {
+            delay(2000); tries++
+            val o = HermesRepo.oauthPoll("nous", sessionId).getOrNull()?.let { J.obj(it) }
+            when (o?.let { J.str(it, "status") }) {
+                "approved" -> { phase = "done"; onLoggedIn(); return@LaunchedEffect }
+                "denied" -> { message = "ورود لغو شد"; phase = "error"; return@LaunchedEffect }
+                "expired" -> { message = "کد منقضی شد — دوباره تلاش کنید"; phase = "error"; return@LaunchedEffect }
+                "error" -> {
+                    val m = J.str(o, "error_message")
+                    message = if (m.isBlank()) "ورود ناموفق بود" else "ورود ناموفق بود: $m"
+                    phase = "error"; return@LaunchedEffect
+                }
+            }
+        }
+        if (phase == "waiting") {
+            message = "زمان ورود به پایان رسید — دوباره تلاش کنید"
+            phase = "error"
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { cancel(); onDismiss() },
+        title = { Text("ورود به Nous Portal") },
+        text = {
+            Column {
+                when (phase) {
+                    "starting" -> LoadingRow("در حال ساخت کد ورود…")
+                    "error" -> Text(
+                        message ?: "خطای نامشخص",
+                        style = MaterialTheme.typography.bodySmall, color = Rose,
+                    )
+                    "done" -> Text(
+                        "✓ ورود با موفقیت انجام شد — مدل پیش‌فرض Nous ست شد.",
+                        style = MaterialTheme.typography.bodySmall, color = Cyan,
+                    )
+                    else -> {
+                        Text(
+                            "این کد را در صفحهٔ Nous وارد کنید:",
+                            style = MaterialTheme.typography.bodySmall, color = TextMid,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                userCode, style = MaterialTheme.typography.titleLarge,
+                                color = Gold, modifier = Modifier.weight(1f),
+                            )
+                            IconButton(onClick = {
+                                clipboard.setText(AnnotatedString(userCode)); copied = true
+                            }) {
+                                Icon(
+                                    if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                                    "کپی کد", tint = if (copied) Lime else TextMid,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        PrimaryButton(
+                            "باز کردن صفحهٔ Nous", { runCatching { uri.openUri(verifyUrl) } },
+                            Modifier.fillMaxWidth(),
+                            enabled = verifyUrl.isNotBlank(),
+                            icon = Icons.Default.OpenInNew,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                Modifier.size(16.dp), strokeWidth = 2.dp,
+                                color = Cyan,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "در انتظار تأیید شما در صفحهٔ Nous…",
+                                style = MaterialTheme.typography.bodySmall, color = TextMid,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            when (phase) {
+                "error" -> TextButton(onClick = { start() }) { Text("تلاش دوباره") }
+                "done" -> TextButton(onClick = onDismiss) { Text("باشه") }
+                else -> TextButton(onClick = { cancel(); onDismiss() }) { Text("انصراف") }
+            }
+        },
+    )
+}
+
 @Composable
 private fun CustomEndpointCard(
     e: JsonObject,
@@ -426,9 +708,102 @@ private fun jsonStrings(arr: JsonArray): List<String> =
 
 // ───────────────────────── دیالوگ‌ها ─────────────────────────
 
+/** ترجمهٔ پیام‌های انگلیسی endpoint به فارسی، تا همهٔ متن‌ها یکدست باشد. */
+private fun faProbeMessage(raw: String): String {
+    val m = raw.trim()
+    return when {
+        m.isBlank() -> "اتصال برقرار نشد"
+        m.contains("Enter an endpoint URL", true) -> "اول آدرس endpoint را وارد کنید"
+        m.contains("rejected the API key", true) -> "endpoint کلید API را رد کرد — کلید را بررسی کنید"
+        m.contains("Could not reach", true) -> "به endpoint دسترسی پیدا نشد — آدرس و اتصال شبکه را بررسی کنید"
+        m.startsWith("Endpoint returned HTTP", true) ->
+            "endpoint پاسخ HTTP ${m.substringAfterLast("HTTP").trim()} را برگرداند"
+        else -> m
+    }
+}
+
+/**
+ * انتخابگر مدل‌های دریافت‌شده از endpoint.
+ *
+ * فهرست واقعی پرووایدرها می‌تواند صدها مدل باشد؛ پس برای فهرست‌های بلند یک
+ * کادر جست‌وجو می‌آید و خودِ فهرست داخل نواحیِ محدود و اسکرول‌شونده نمایش داده
+ * می‌شود تا دیالوگ از صفحه بیرون نزند.
+ */
+@Composable
+private fun FetchedModelsPicker(
+    models: List<String>,
+    selected: String,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    val shown = remember(models, query) {
+        if (query.isBlank()) models
+        else models.filter { it.contains(query.trim(), ignoreCase = true) }
+    }
+    Spacer(Modifier.height(12.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "مدل‌های دریافت‌شده", Modifier.weight(1f),
+            style = MaterialTheme.typography.labelMedium, color = TextMid,
+        )
+        Text("${faNum(models.size)} مدل", style = MaterialTheme.typography.bodySmall, color = TextLow)
+    }
+    if (models.size > 8) {
+        Spacer(Modifier.height(6.dp))
+        LabeledField(
+            "جست‌وجوی مدل", query, onQueryChange,
+            placeholder = "بخشی از نام مدل…",
+            trailing = { Icon(Icons.Default.Search, null, Modifier.size(18.dp), tint = TextLow) },
+        )
+    }
+    Spacer(Modifier.height(6.dp))
+    // فهرست مدل‌ها می‌تواند صدها ردیف باشد؛ LazyColumn فقط ردیف‌های دیده‌شده
+    // را می‌سازد تا دیالوگ هنگام تایپ در جست‌وجو کند نشود.
+    LazyColumn(
+        Modifier.fillMaxWidth().heightIn(max = 176.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .padding(vertical = 4.dp)
+    ) {
+        if (shown.isEmpty()) {
+            item("empty") {
+                Text(
+                    "مدلی با این نام پیدا نشد",
+                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodySmall, color = TextLow,
+                )
+            }
+        }
+        items(shown) { m ->
+            val active = m == selected
+            Row(
+                Modifier.fillMaxWidth().clickable { onSelect(m) }
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    if (active) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                    null, Modifier.size(17.dp), tint = if (active) Gold else TextLow,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    m, Modifier.weight(1f), maxLines = 1,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (active) Gold else TextHi,
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AddProviderDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
+private fun AddProviderDialog(
+    onDismiss: () -> Unit,
+    onSaved: () -> Unit,
+    onNousLogin: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var baseUrl by remember { mutableStateOf("") }
@@ -436,15 +811,52 @@ private fun AddProviderDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
     var apiKey by remember { mutableStateOf("") }
     var apiMode by remember { mutableStateOf("") }
     var extraModels by remember { mutableStateOf("") }
-    var testMsg by remember { mutableStateOf<String?>(null) }
-    var testBusy by remember { mutableStateOf(false) }
+    var fetchMsg by remember { mutableStateOf<String?>(null) }
+    var fetchBusy by remember { mutableStateOf(false) }
     var saveBusy by remember { mutableStateOf(false) }
     var dlgError by remember { mutableStateOf<String?>(null) }
+    var fetchedModels by remember { mutableStateOf<List<String>>(emptyList()) }
+    var modelQuery by remember { mutableStateOf("") }
 
     val modes = listOf("" to "خودکار", "chat_completions" to "Chat", "anthropic_messages" to "Anthropic", "codex_responses" to "Responses")
 
     fun parsedModels(): List<String> =
         extraModels.split('\n', ',').map { it.trim() }.filter { it.isNotBlank() }.distinct()
+
+    /** دریافت فهرست مدل‌های endpoint با آدرس/کلیدِ همین فرم، برای انتخاب مدل پیش‌فرض. */
+    fun fetchModels() {
+        if (fetchBusy || saveBusy) return
+        scope.launch {
+            fetchBusy = true; fetchMsg = null; dlgError = null
+            HermesRepo.validateCustomEndpoint(
+                name = name.trim().ifBlank { "probe" },
+                baseUrl = baseUrl.trim(), model = model.trim(),
+                apiKey = apiKey.trim(), apiMode = apiMode,
+            ).onSuccess { r ->
+                val o = J.obj(r)
+                val list = jsonStrings(J.listOf(o, "models")).distinct()
+                val ok = J.bool(o, "ok")
+                val reachable = J.bool(o, "reachable", true)
+                fetchedModels = list
+                // اگر کاربر هنوز مدلی ننوشته، اولین مدلِ endpoint را همان‌جا
+                // انتخاب می‌کنیم تا ذخیره یک‌کلیکی شود؛ باقی مدل‌ها هم در
+                // فهرست می‌مانند تا در صورت نیاز عوضش کند.
+                if (model.isBlank() && list.isNotEmpty()) model = list.first()
+                fetchMsg = when {
+                    ok && list.isNotEmpty() && list.size > 1 ->
+                        "✓ اتصال برقرار شد — ${faNum(list.size)} مدل دریافت شد؛ یکی را به‌عنوان مدل پیش‌فرض انتخاب کنید."
+                    ok && list.isNotEmpty() ->
+                        "✓ اتصال برقرار شد — تنها مدل endpoint «${list.first()}» است و انتخاب شد."
+                    ok ->
+                        "✓ اتصال برقرار شد، ولی endpoint فهرست مدلی اعلام نکرد؛ مدل را دستی وارد کنید."
+                    !reachable ->
+                        "✗ به endpoint دسترسی پیدا نشد؛ آدرس و اتصال شبکه را بررسی کنید. (می‌توانید مدل را دستی وارد و ذخیره کنید.)"
+                    else -> "✗ ${faProbeMessage(J.str(o, "message"))}"
+                }
+            }.onFailure { dlgError = it.message }
+            fetchBusy = false
+        }
+    }
 
     AlertDialog(
         onDismissRequest = { if (!saveBusy) onDismiss() },
@@ -452,21 +864,66 @@ private fun AddProviderDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
-                    "یک endpoint سازگار با OpenAI اضافه کنید. با «ذخیره و اتصال» هم پرووایدر ساخته می‌شود و هم به‌عنوان مدل فعال هرمس تنظیم می‌شود.",
+                    "یک endpoint سازگار با OpenAI اضافه کنید. آدرس و کلید را که وارد کردید، «دریافت مدل‌ها» فهرست مدل‌های endpoint را می‌آورد تا یکی را به‌عنوان مدل پیش‌فرض انتخاب کنید.",
                     style = MaterialTheme.typography.bodySmall, color = TextMid,
+                )
+                Spacer(Modifier.height(12.dp))
+                // راه دوم افزودن پرووایدر: ورود با Nous Research (OAuth، بدون کلید).
+                GhostButton(
+                    "ورود با حساب Nous Research",
+                    onNousLogin,
+                    Modifier.fillMaxWidth(),
+                    color = Gold,
+                    icon = Icons.Default.Login,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "اگر می‌خواهی از مدل‌های Nous استفاده کنی، همین‌جا با حسابت وارد شو؛ نیازی به آدرس و کلید نیست.",
+                    style = MaterialTheme.typography.bodySmall, color = TextLow,
                 )
                 Spacer(Modifier.height(12.dp))
                 LabeledField("نام پرووایدر", name, { name = it }, placeholder = "My Provider")
                 Spacer(Modifier.height(10.dp))
                 LabeledField("آدرس endpoint", baseUrl, { baseUrl = it }, placeholder = "https://api.example.com/v1")
                 Spacer(Modifier.height(10.dp))
-                LabeledField("مدل پیش‌فرض", model, { model = it }, placeholder = "gpt-4o-mini")
-                Spacer(Modifier.height(10.dp))
                 LabeledField(
                     "کلید API (اختیاری)", apiKey, { apiKey = it },
                     placeholder = "sk-…",
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+                Spacer(Modifier.height(12.dp))
+                GhostButton(
+                    if (fetchBusy) "در حال دریافت مدل‌ها…" else "دریافت مدل‌ها",
+                    ::fetchModels,
+                    Modifier.fillMaxWidth(),
+                    color = Cyan,
+                    icon = Icons.Default.CloudDownload,
+                )
+                fetchMsg?.let { msg ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        msg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (msg.startsWith("✓")) Cyan else Rose,
+                    )
+                }
+                if (fetchedModels.isNotEmpty()) {
+                    FetchedModelsPicker(
+                        models = fetchedModels,
+                        selected = model.trim(),
+                        query = modelQuery,
+                        onQueryChange = { modelQuery = it },
+                        onSelect = { model = it },
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                LabeledField(
+                    "مدل پیش‌فرض", model, { model = it },
+                    placeholder = "gpt-4o-mini",
+                    trailing = if (model.isNotBlank()) {
+                        { Icon(Icons.Default.CheckCircle, null, Modifier.size(18.dp), tint = Lime) }
+                    } else null,
                 )
                 Spacer(Modifier.height(12.dp))
                 Text("حالت API", style = MaterialTheme.typography.labelMedium, color = TextMid)
@@ -488,10 +945,6 @@ private fun AddProviderDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
                     "مدل‌های بیشتر (هر خط یک مدل)", extraModels, { extraModels = it },
                     singleLine = false, placeholder = "model-a\nmodel-b",
                 )
-                testMsg?.let {
-                    Spacer(Modifier.height(10.dp))
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = Cyan)
-                }
                 dlgError?.let {
                     Spacer(Modifier.height(10.dp))
                     Text(it, style = MaterialTheme.typography.bodySmall, color = Rose)
@@ -499,51 +952,30 @@ private fun AddProviderDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
             }
         },
         confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(
-                    enabled = !testBusy && !saveBusy && baseUrl.isNotBlank(),
-                    onClick = {
-                        scope.launch {
-                            testBusy = true; testMsg = null; dlgError = null
-                            HermesRepo.validateCustomEndpoint(
-                                name = name.ifBlank { "probe" },
-                                baseUrl = baseUrl, model = model, apiKey = apiKey, apiMode = apiMode,
-                            ).onSuccess { r ->
-                                val o = J.obj(r)
-                                val models = jsonStrings(J.listOf(o, "models"))
-                                val ok = J.bool(o, "ok")
-                                val msg = J.str(o, "message")
-                                testMsg = when {
-                                    ok -> "✓ اتصال برقرار شد — ${faNum(models.size)} مدل پیدا شد" +
-                                        if (models.isNotEmpty()) ":\n" + models.take(8).joinToString("، ") else ""
-                                    msg.isNotBlank() -> "✗ $msg"
-                                    else -> "✗ اتصال برقرار نشد"
-                                }
-                            }.onFailure { dlgError = it.message }
-                            testBusy = false
+            TextButton(
+                enabled = !saveBusy && !fetchBusy && name.isNotBlank() && baseUrl.isNotBlank() && model.isNotBlank(),
+                onClick = {
+                    scope.launch {
+                        saveBusy = true; dlgError = null
+                        HermesRepo.addCustomEndpoint(
+                            name = name.trim(),
+                            baseUrl = baseUrl.trim(),
+                            model = model.trim(),
+                            apiKey = apiKey.trim(),
+                            apiMode = apiMode,
+                            models = parsedModels(),
+                            makeDefault = true,
+                        ).onSuccess { r ->
+                            // فهرست دریافت‌شده محلی نگه داشته می‌شود تا بعد از
+                            // ذخیره هم بتوان از کارت پرووایدر بین مدل‌ها جابه‌جا شد.
+                            HermesRepo.saveEndpointModels(J.str(J.obj(r), "id"), fetchedModels)
+                            onSaved()
                         }
-                    },
-                ) { Text(if (testBusy) "در حال تست…" else "تست") }
-                TextButton(
-                    enabled = !saveBusy && !testBusy && name.isNotBlank() && baseUrl.isNotBlank() && model.isNotBlank(),
-                    onClick = {
-                        scope.launch {
-                            saveBusy = true; dlgError = null
-                            HermesRepo.addCustomEndpoint(
-                                name = name.trim(),
-                                baseUrl = baseUrl.trim(),
-                                model = model.trim(),
-                                apiKey = apiKey.trim(),
-                                apiMode = apiMode,
-                                models = parsedModels(),
-                                makeDefault = true,
-                            ).onSuccess { onSaved() }
-                                .onFailure { dlgError = it.message }
-                            saveBusy = false
-                        }
-                    },
-                ) { Text(if (saveBusy) "در حال ذخیره…" else "ذخیره و اتصال") }
-            }
+                            .onFailure { dlgError = it.message }
+                        saveBusy = false
+                    }
+                },
+            ) { Text(if (saveBusy) "در حال ذخیره…" else "ذخیره و اتصال") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } },
     )
