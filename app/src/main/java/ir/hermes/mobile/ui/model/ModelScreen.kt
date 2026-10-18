@@ -1,12 +1,14 @@
 package ir.hermes.mobile.ui.model
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -21,14 +23,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import ir.hermes.mobile.data.HermesRepo
 import ir.hermes.mobile.data.J
 import ir.hermes.mobile.ui.components.*
 import ir.hermes.mobile.ui.theme.*
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
@@ -36,21 +39,22 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
- * صفحهٔ «مدل و پرووایدر».
+ * صفحهٔ «مدل و پرووایدر» با چیدمانِ یکدست.
  *
- * دو دسته پرووایدر نمایش داده می‌شود:
- *  - پرووایدرهای شناخته‌شدهٔ هرمس (از `model.options`) که با `model.save_key` کلید می‌گیرند.
- *  - پرووایدرهای سفارشی/endpoint (از REST `/api/providers/custom-endpoints`) که می‌توان
- *    ساخت، فعال (وصل به هرمس)، و حذف کرد.
+ * هر پرووایدر (شناخته‌شده، Nous Research، یا سفارشی) یک ردیفِ جمع‌شوندهٔ
+ * یکسان دارد: نقطهٔ وضعیت، نام، یک خط توضیح، و نشانِ «فعال». با لمسِ ردیف
+ * فهرست مدل‌ها و دکمه‌های عمل باز می‌شود. این کار هم صفحه را خلوت می‌کند و هم
+ * تکرارِ قبلیِ «Nous Portal» (کارتِ اختصاصی + ردیفِ معمولی) را از بین می‌برد.
  *
- * نکتهٔ مهم: افزودن پرووایدر جدید در هرمس از طریق REST داشبورد انجام می‌شود، نه
- * `config.set`؛ چون `config.set` فقط کلیدهای ثابت را می‌پذیرد و پرووایدر نمی‌سازد.
+ * بارگذاری عمداً موازی است: `model.options`، endpointهای سفارشی و وضعیت OAuth
+ * هم‌زمان خوانده می‌شوند تا زمانِ انتظار جمعِ آن‌ها نباشد بلکه بیشترین‌شان باشد.
  */
 @Composable
 fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
 
     var loading by remember { mutableStateOf(true) }
+    var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var currentProvider by remember { mutableStateOf("") }
     var currentModel by remember { mutableStateOf("") }
@@ -58,18 +62,34 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
     var endpoints by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
     // پرووایدرهای ورود OAuth (Nous Portal و…) به‌همراه وضعیت ورودشان.
     var oauthProviders by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
+    // مدل‌های Nous جدا نگه داشته می‌شوند؛ چون ردیفِ مخصوص خودش را دارد و از
+    // فهرستِ پرووایدرهای معمولی حذف می‌شود تا دوبار دیده نشود. مقدار اولیه از
+    // کشِ محلی می‌آید تا صفحه بدون انتظار برای سرور، مدل‌ها را نشان دهد.
+    var nousModels by remember { mutableStateOf(HermesRepo.cachedEndpointModels("nous")) }
 
     var showAdd by remember { mutableStateOf(false) }
     var addModelTarget by remember { mutableStateOf<JsonObject?>(null) }
     var keyTarget by remember { mutableStateOf<Pair<String, String>?>(null) } // slug to displayName
     var nousLogin by remember { mutableStateOf(false) }
+    // وضعیتِ باز/بستهٔ هر ردیف، با کلیدِ پایدار؛ تا وقتی که کاربر خودش عوض کند،
+    // ردیفِ فعال به‌طور پیش‌فرض باز است.
+    val expanded = remember { mutableStateMapOf<String, Boolean>() }
 
     /** اعمالِ گزینهٔ مدل‌ها روی state صفحه (هم برای دادهٔ کش، هم برای دادهٔ تازه). */
     fun applyOptions(o: JsonObject) {
         currentProvider = J.str(o, "provider", "")
         currentModel = J.str(o, "model", "")
-        providers = J.listOf(o, "providers").map { J.obj(it) }
+        val all = J.listOf(o, "providers").map { J.obj(it) }
             .filter { !J.bool(it, "is_user_defined") && J.str(it, "slug").lowercase() != "custom" }
+        // مدل‌های Nous را برمی‌داریم و بعد ردیفش را از فهرستِ معمولی حذف
+        // می‌کنیم؛ وگرنه Nous دو بار (کارت + ردیف) نمایش داده می‌شود.
+        val fresh = all.firstOrNull { J.str(it, "slug").lowercase() == "nous" }
+            ?.let { jsonStrings(J.listOf(it, "models")) } ?: emptyList()
+        if (fresh.isNotEmpty()) {
+            HermesRepo.saveEndpointModels("nous", fresh)
+            nousModels = (fresh + HermesRepo.cachedEndpointModels("nous")).distinct()
+        }
+        providers = all.filter { J.str(it, "slug").lowercase() != "nous" }
     }
 
     /**
@@ -88,31 +108,42 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
         }
     }
 
+    /**
+     * بارگذاریِ موازیِ دادهٔ صفحه.
+     *
+     * ابتدا کشِ محلی فوراً نشان داده می‌شود تا کاربر منتظر سرور نماند؛ بعد هر
+     * سه فراخوانِ سرور هم‌زمان اجرا می‌شوند (نه پشتِ سرِ هم).
+     */
     suspend fun load(refresh: Boolean = false) {
-        // ابتدا دادهٔ کش‌شده را فوری نمایش می‌دهیم تا کاربر منتظر سرور
-        // نماند؛ سپس در پس‌زمینه از هرمس تازه‌سازی می‌کنیم.
-        val fromCache = if (!refresh) {
-            HermesRepo.cachedModelOptions()?.also { applyOptions(it) }
-            HermesRepo.cachedEndpoints()?.let { endpoints = withCachedModels(it.map { J.obj(it) }) }
-        } else null
-        // اگر کشی نبود (اولین بازدید)، حالتِ بارگذاری را نشان می‌دهیم تا
-        // پیامِ «پرووایدری یافت نشد» به‌اشتباه نمایش داده نشود.
-        loading = refresh || fromCache == null
+        var hadCache = false
+        if (!refresh) {
+            HermesRepo.cachedModelOptions()?.also { hadCache = true; applyOptions(it) }
+            HermesRepo.cachedEndpoints()?.let { endpoints = withCachedModels(it.map { e -> J.obj(e) }) }
+        }
+        // اگر کشی نبود (اولین بازدید یا تازه‌سازیِ دستی)، حالتِ بارگذاری را
+        // نشان می‌دهیم تا پیامِ «یافت نشد» به‌اشتباه ظاهر نشود. در هر حال
+        // تا پایانِ کارِ سرور «مشغول» هستیم تا ردیف‌های خالی چرخِ انتظار
+        // نشان دهند.
+        loading = !hadCache
+        busy = true
         error = null
-        HermesRepo.modelOptions(refresh)
-            .onSuccess { r -> applyOptions(J.obj(r)) }
-            .onFailure { error = it.message }
-        HermesRepo.customEndpoints()
-            .onSuccess { r ->
-                endpoints = withCachedModels(J.listOf(J.obj(r), "endpoints").map { J.obj(it) })
+        coroutineScope {
+            launch {
+                HermesRepo.modelOptions(refresh)
+                    .onSuccess { r -> applyOptions(J.obj(r)) }
+                    .onFailure { error = it.message }
             }
+            launch {
+                HermesRepo.customEndpoints()
+                    .onSuccess { r -> endpoints = withCachedModels(J.listOf(J.obj(r), "endpoints").map { J.obj(it) }) }
+            }
+            launch {
+                HermesRepo.oauthProviders()
+                    .onSuccess { r -> oauthProviders = J.listOf(J.obj(r), "providers").map { J.obj(it) } }
+            }
+        }
         loading = false
-        // وضعیت OAuth جدا و بعد از نمایش فهرست می‌آید؛ چون سرور ممکن است برای
-        // خواندن وضعیت Nous با پورتال صحبت کند و نباید صفحه را معطل کند.
-        HermesRepo.oauthProviders()
-            .onSuccess { r ->
-                oauthProviders = J.listOf(J.obj(r), "providers").map { J.obj(it) }
-            }
+        busy = false
     }
 
     /**
@@ -134,9 +165,13 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
 
     LaunchedEffect(Unit) { load() }
 
+    val nousInfo = oauthProviders.firstOrNull { J.str(it, "id") == "nous" } ?: JsonObject(emptyMap())
+    val nousStatus = J.obj(nousInfo["status"])
+    val nousLoggedIn = J.bool(nousStatus, "logged_in") || nousModels.isNotEmpty()
+
     Scaffold(containerColor = Color.Transparent, topBar = {
         TopBar("مدل و پرووایدر", onBack) {
-            IconButton(onClick = { scope.launch { load(refresh = true) } }) {
+            IconButton(onClick = { scope.launch { busy = true; load(refresh = true); busy = false } }) {
                 Icon(Icons.Default.Refresh, "تازه‌سازی", tint = TextMid)
             }
             IconButton(onClick = { showAdd = true }) {
@@ -149,66 +184,75 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             error?.let { msg ->
-                item("err") { ErrorBanner(msg) { scope.launch { load(refresh = true) } } }
+                item("err") { ErrorBanner(msg) { scope.launch { busy = true; load(refresh = true); busy = false } } }
             }
 
+            // ── مدلِ فعال: یک نوارِ خلوت، بدون متن‌های طولانی ─────────────
             item("active") {
-                GlassCard(Modifier.fillMaxWidth()) {
-                    SectionTitle("مدل فعال هرمس")
-                    Spacer(Modifier.height(6.dp))
-                    if (currentModel.isNotBlank()) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.AutoAwesome, null, Modifier.size(18.dp), tint = Gold)
-                            Spacer(Modifier.width(8.dp))
-                            Column {
-                                Text(currentModel, style = MaterialTheme.typography.titleSmall, color = Gold)
-                                if (currentProvider.isNotBlank()) {
-                                    Text(currentProvider, style = MaterialTheme.typography.bodySmall, color = TextMid)
-                                }
-                            }
-                        }
-                    } else {
-                        Text("مدل فعالی از سرور خوانده نشد", style = MaterialTheme.typography.bodySmall, color = TextMid)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "با انتخاب هر مدل، همان مدل روی نشست‌های جدید ست می‌شود (نوبت جاری متوقف و نشست تازه با مدل جدید ساخته می‌شود). در صفحهٔ چت هم از نشان مدل بالای صفحه می‌توانید مدل را همین‌جا عوض کنید.",
-                        style = MaterialTheme.typography.bodySmall, color = TextLow,
-                    )
-                }
+                ActiveModelHeader(currentModel, currentProvider)
             }
 
-            if (loading) {
-                item("loading") { LoadingRow() }
-            }
+            if (loading) item("loading") { LoadingRow() }
 
+            // ── پرووایدرهای هرمس (Nous هم یک ردیفِ همین فهرست است) ────────
             item("providers-title") {
-                SectionTitle("پرووایدرهای هرمس") {
-                    SmallTextButton("افزودن پرووایدر جدید") { showAdd = true }
+                SectionTitle("پرووایدرها") {
+                    SmallTextButton("افزودن") { showAdd = true }
                 }
             }
-            // ورود با Nous Portal (OAuth کد دستگاه) — جدا از کارت‌های پرووایدر
-            // می‌آید چون ورودش با کلید API نیست و باید جلوتر و پررنگ‌تر دیده شود.
-            // عمداً همیشه نمایش داده می‌شود؛ اگر فهرست OAuth دیر برسد یا خطا
-            // بدهد، کاربر باز هم می‌تواند دکمهٔ ورود را ببیند.
+
             item("nous") {
-                NousPortalCard(
-                    info = oauthProviders.firstOrNull { J.str(it, "id") == "nous" }
-                        ?: JsonObject(emptyMap()),
-                    nousModels = providers.firstOrNull { J.str(it, "slug") == "nous" }
-                        ?.let { jsonStrings(J.listOf(it, "models")) } ?: emptyList(),
-                    isActive = currentProvider == "nous",
-                    onLogin = { nousLogin = true },
-                    onSelectModel = { m -> applyMain("nous", m) },
-                    onLogout = {
-                        scope.launch {
-                            HermesRepo.oauthDisconnect("nous")
-                                .onSuccess { load(refresh = true) }
-                                .onFailure { error = it.message }
-                        }
+                val isActive = currentProvider == "nous"
+                val source = J.str(nousStatus, "source_label")
+                val token = J.str(nousStatus, "token_preview")
+                ProviderRow(
+                    key = "nous",
+                    title = "Nous Research",
+                    subtitle = when {
+                        nousLoggedIn && source.isNotBlank() && token.isNotBlank() -> "$source — $token"
+                        nousLoggedIn -> "متصل به Nous Portal"
+                        else -> "وارد نشده — برای استفاده از مدل‌های Nous وارد شوید"
                     },
-                )
+                    active = isActive,
+                    accent = Lime,
+                    badge = if (isActive) "فعال" else null,
+                    expanded = expanded,
+                    defaultOpen = isActive,
+                ) {
+                    if (!nousLoggedIn) {
+                        Text(
+                            "با حساب Nous Research وارد شوید تا از مدل‌های آن استفاده کنید. هرمس یک کد به شما می‌دهد و شما آن را در صفحهٔ Nous وارد می‌کنید.",
+                            style = MaterialTheme.typography.bodySmall, color = TextMid,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        PrimaryButton("ورود با حساب Nous", { nousLogin = true }, Modifier.fillMaxWidth(), icon = Icons.Default.Login)
+                    } else {
+                        if (busy && nousModels.isEmpty()) {
+                            LoadingRow("در حال دریافت فهرست مدل‌های Nous…")
+                        } else {
+                            ModelPicker(
+                                models = nousModels,
+                                selected = if (isActive) currentModel else "",
+                                onSelect = { m -> applyMain("nous", m) },
+                                emptyText = "فهرستی نیامد — «تازه‌سازی» را بزنید",
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        GhostButton(
+                            "خروج از حساب Nous",
+                            {
+                                scope.launch {
+                                    HermesRepo.oauthDisconnect("nous")
+                                        .onSuccess { load(refresh = true) }
+                                        .onFailure { error = it.message }
+                                }
+                            },
+                            Modifier.fillMaxWidth(), color = Rose, icon = Icons.Default.Logout,
+                        )
+                    }
+                }
             }
+
             if (providers.isEmpty() && !loading) {
                 item("providers-empty") {
                     EmptyState("پرووایدر شناخته‌شده‌ای یافت نشد — یکی بسازید", Icons.Default.CloudOff)
@@ -217,8 +261,8 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
             items(providers, key = { "c:${J.str(it, "slug", J.str(it, "name"))}" }) { p ->
                 CanonicalProviderCard(
                     p = p,
-                    isActive = J.bool(p, "is_current") ||
-                        (currentProvider.isNotBlank() && J.str(p, "slug") == currentProvider),
+                    currentModel = currentModel,
+                    expanded = expanded,
                     onSelectModel = { model -> applyMain(J.str(p, "slug"), model) },
                     onSetKey = {
                         keyTarget = J.str(p, "slug") to J.str(p, "name", J.str(p, "slug"))
@@ -233,7 +277,12 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
                 )
             }
 
-            item("custom-title") { SectionTitle("پرووایدرهای سفارشی (endpoint)") }
+            // ── پرووایدرهای سفارشی (endpoint) ─────────────────────────────
+            item("custom-title") {
+                SectionTitle("پرووایدرهای سفارشی") {
+                    SmallTextButton("افزودن") { showAdd = true }
+                }
+            }
             if (endpoints.isEmpty() && !loading) {
                 item("custom-empty") {
                     EmptyState("هنوز endpoint سفارشی نساخته‌اید", Icons.Default.Dns)
@@ -242,6 +291,8 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
             items(endpoints, key = { "e:${J.str(it, "id", J.str(it, "name"))}" }) { e ->
                 CustomEndpointCard(
                     e = e,
+                    currentModel = currentModel,
+                    expanded = expanded,
                     onActivate = {
                         scope.launch {
                             HermesRepo.activateCustomEndpoint(J.str(e, "id"))
@@ -277,7 +328,7 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
             onSaved = {
                 showAdd = false
                 HermesRepo.clearSession(); onModelChanged()
-                scope.launch { load(refresh = true) }
+                scope.launch { busy = true; load(refresh = true); busy = false }
             },
             onNousLogin = { showAdd = false; nousLogin = true },
         )
@@ -287,7 +338,7 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
         AddModelDialog(
             endpoint = e,
             onDismiss = { addModelTarget = null },
-            onSaved = { addModelTarget = null; scope.launch { load(refresh = true) } },
+            onSaved = { addModelTarget = null; scope.launch { busy = true; load(refresh = true); busy = false } },
         )
     }
 
@@ -296,7 +347,7 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
             slug = slug,
             title = name,
             onDismiss = { keyTarget = null },
-            onSaved = { keyTarget = null; scope.launch { load(refresh = true) } },
+            onSaved = { keyTarget = null; scope.launch { busy = true; load(refresh = true); busy = false } },
         )
     }
 
@@ -305,20 +356,209 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
             onDismiss = { nousLogin = false },
             onLoggedIn = {
                 nousLogin = false
+                // دو کارِ مستقل را موازی می‌فرستیم: فهرست/مدل‌ها را تازه می‌کنیم
+                // و هم‌زمان مدلِ پیشنهادی را می‌گیریم. قبلاً این دو پشتِ سرِ هم
+                // بودند و «تازه‌سازیِ سنگین» هم همهٔ پرووایدرها را دوباره
+                // می‌خواند؛ حالا نه.
+                busy = true
+                scope.launch { load() }
                 scope.launch {
-                    // بعد از ورود، هرمس مدل پیشنهادیِ مناسب (رایگان/پرداختی) را
-                    // خودش انتخاب می‌کند؛ بعد هم کاربر می‌تواند از کارت Nous
-                    // بین بقیهٔ مدل‌ها جابه‌جا شود.
                     val rec = HermesRepo.recommendedDefault("nous").getOrNull()
                     val m = rec?.let { J.str(J.obj(it), "model") }.orEmpty()
                     if (m.isNotBlank()) {
                         HermesRepo.applyModel("nous", m)
                         onModelChanged()
+                        load()
                     }
-                    load(refresh = true)
                 }
             },
         )
+    }
+}
+
+/** نام‌های خوانا برای اسلاگ‌های پرکاربرد؛ بقیه همان اسلاگ نمایش داده می‌شوند. */
+private val PROVIDER_LABELS = mapOf(
+    "nous" to "Nous Research",
+    "openrouter" to "OpenRouter",
+    "anthropic" to "Anthropic",
+    "openai" to "OpenAI",
+    "openai-codex" to "OpenAI Codex",
+    "google" to "Google",
+    "gemini" to "Google Gemini",
+    "xai" to "xAI",
+    "xai-oauth" to "xAI Grok",
+    "deepseek" to "DeepSeek",
+    "mistral" to "Mistral",
+    "groq" to "Groq",
+    "minimax" to "MiniMax",
+    "qwen" to "Qwen",
+    "copilot" to "GitHub Copilot",
+)
+
+private fun providerLabel(slug: String): String = PROVIDER_LABELS[slug.lowercase()] ?: slug
+
+/** نوارِ فشردهٔ مدلِ فعال. */
+@Composable
+private fun ActiveModelHeader(model: String, provider: String) {
+    GlassCard(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(38.dp).clip(CircleShape).background(Gold.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Default.AutoAwesome, null, Modifier.size(19.dp), tint = Gold)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (model.isBlank()) "مدلی انتخاب نشده" else model,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = if (model.isBlank()) TextMid else TextHi,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    if (provider.isBlank()) "از سرور خوانده نشد" else providerLabel(provider),
+                    style = MaterialTheme.typography.bodySmall, color = TextLow, maxLines = 1,
+                )
+            }
+            if (model.isNotBlank()) Pill("فعال", Gold)
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "با انتخاب هر مدل، نشست‌های جدید با همان مدل ساخته می‌شوند.",
+            style = MaterialTheme.typography.bodySmall, color = TextLow,
+        )
+    }
+}
+
+/**
+ * ردیفِ یکدستِ پرووایدر.
+ *
+ * سربرگ همیشه یکسان است؛ محتوای بازشده را فراخوان می‌دهد. وضعیتِ باز/بسته در
+ * نگاشتِ [expanded] نگه داشته می‌شود تا ردیفِ فعال به‌طور پیش‌فرض باز بماند
+ * ولی کاربر هم بتواند آزادانه باز/بسته کند.
+ */
+@Composable
+private fun ProviderRow(
+    key: String,
+    title: String,
+    subtitle: String,
+    active: Boolean,
+    accent: Color = Lime,
+    badge: String? = null,
+    badgeColor: Color = Gold,
+    expanded: MutableMap<String, Boolean>,
+    defaultOpen: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val open = expanded[key] ?: defaultOpen
+    val shape = RoundedCornerShape(16.dp)
+    Column(
+        Modifier.fillMaxWidth()
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, if (active) accent.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant, shape)
+    ) {
+        Row(
+            Modifier.fillMaxWidth().clickable { expanded[key] = !open }
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            StatusDot(active, accent, 9)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (active) accent else TextMid,
+                    maxLines = 2,
+                )
+            }
+            if (badge != null) { Pill(badge, badgeColor); Spacer(Modifier.width(6.dp)) }
+            Icon(
+                if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                if (open) "بستن" else "باز کردن", tint = TextLow, modifier = Modifier.size(20.dp),
+            )
+        }
+        if (open) {
+            Column(
+                Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, bottom = 14.dp),
+                content = content,
+            )
+        }
+    }
+}
+
+/** فهرستِ مدل‌های یک پرووایدر، با جست‌وجو برای فهرست‌های بلند. */
+@Composable
+private fun ModelPicker(
+    models: List<String>,
+    selected: String,
+    onSelect: (String) -> Unit,
+    emptyText: String,
+    maxHeight: Dp = 220.dp,
+) {
+    if (models.isEmpty()) {
+        Text(emptyText, style = MaterialTheme.typography.bodySmall, color = TextLow)
+        return
+    }
+    var query by remember(models) { mutableStateOf("") }
+    val shown = remember(models, query) {
+        if (query.isBlank()) models
+        else models.filter { it.contains(query.trim(), ignoreCase = true) }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("مدل‌ها", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = TextMid)
+        Text("${faNum(models.size)} مدل", style = MaterialTheme.typography.bodySmall, color = TextLow)
+    }
+    if (models.size > 8) {
+        Spacer(Modifier.height(6.dp))
+        LabeledField(
+            "جست‌وجوی مدل", query, { query = it },
+            placeholder = "بخشی از نام مدل…",
+            trailing = { Icon(Icons.Default.Search, null, Modifier.size(18.dp), tint = TextLow) },
+        )
+    }
+    Spacer(Modifier.height(6.dp))
+    // LazyColumn فقط ردیف‌های دیده‌شده را می‌سازد؛ ارتفاع محدود است تا داخل
+    // فهرستِ بیرونی به‌درستی جا شود.
+    LazyColumn(
+        Modifier.fillMaxWidth().heightIn(max = maxHeight)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .padding(vertical = 4.dp)
+    ) {
+        if (shown.isEmpty()) {
+            item("empty") {
+                Text(
+                    "مدلی با این نام پیدا نشد",
+                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodySmall, color = TextLow,
+                )
+            }
+        }
+        items(shown) { m ->
+            val isActive = m == selected
+            Row(
+                Modifier.fillMaxWidth().clickable { onSelect(m) }
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    if (isActive) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                    null, Modifier.size(17.dp), tint = if (isActive) Gold else TextLow,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    m, Modifier.weight(1f), maxLines = 1,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isActive) Gold else TextHi,
+                )
+            }
+        }
     }
 }
 
@@ -331,156 +571,122 @@ private fun SmallTextButton(text: String, onClick: () -> Unit) {
     }
 }
 
-/** فهرست مدل‌ها به‌صورت قابل کلیک؛ حداکثر [limit] مورد اول برای جلوگیری از فهرست‌های غول‌آسا. */
-@Composable
-private fun ModelList(models: List<String>, onSelect: (String) -> Unit, emptyText: String, limit: Int = 15) {
-    if (models.isEmpty()) {
-        Text(emptyText, style = MaterialTheme.typography.bodySmall, color = TextLow)
-        return
-    }
-    models.take(limit).forEach { m ->
-        Row(
-            Modifier.fillMaxWidth().clickable { onSelect(m) }.padding(vertical = 7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Default.ChevronLeft, null, Modifier.size(15.dp), tint = TextLow)
-            Spacer(Modifier.width(4.dp))
-            Text(m, style = MaterialTheme.typography.bodyMedium, color = TextHi, modifier = Modifier.weight(1f))
-        }
-    }
-    if (models.size > limit) {
-        Text("و ${faNum(models.size - limit)} مدل دیگر…", style = MaterialTheme.typography.bodySmall, color = TextLow)
-    }
-}
-
 @Composable
 private fun CanonicalProviderCard(
     p: JsonObject,
-    isActive: Boolean,
+    currentModel: String,
+    expanded: MutableMap<String, Boolean>,
     onSelectModel: (String) -> Unit,
     onSetKey: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(isActive) }
     val slug = J.str(p, "slug", J.str(p, "name"))
-    val label = J.str(p, "name", slug)
+    val label = J.str(p, "name", providerLabel(slug))
     val connected = J.bool(p, "authenticated")
+    val isCurrent = J.bool(p, "is_current")
     val authType = J.str(p, "auth_type")
     val keyEnv = J.str(p, "key_env")
     val warning = J.str(p, "warning")
     val models = jsonStrings(J.listOf(p, "models"))
 
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .clickable { expanded = !expanded }
-            .padding(14.dp)
+    ProviderRow(
+        key = "c:$slug",
+        title = label,
+        subtitle = when {
+            connected -> "متصل"
+            warning.isNotBlank() -> warning
+            authType == "api_key" || keyEnv.isNotBlank() -> "برای استفاده، کلید API را ثبت کنید"
+            else -> "متصل نیست"
+        },
+        active = isCurrent,
+        accent = Lime,
+        badge = if (isCurrent) "فعال" else null,
+        expanded = expanded,
+        defaultOpen = isCurrent,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(connected, if (connected) Lime else TextLow)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(label, style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (connected) "متصل" else "متصل نیست",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (connected) Lime else TextLow,
-                )
-                if (warning.isNotBlank() && !connected) {
-                    Text(warning, style = MaterialTheme.typography.bodySmall, color = Amber)
-                }
+        ModelPicker(
+            models = models,
+            selected = if (isCurrent) currentModel else "",
+            onSelect = onSelectModel,
+            emptyText = "فهرست مدل‌ها خالی است",
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (authType == "api_key" || keyEnv.isNotBlank()) {
+                GhostButton("ثبت کلید", onSetKey, Modifier.weight(1f), icon = Icons.Default.VpnKey)
             }
-            if (isActive) Pill("فعال", Gold)
-            Spacer(Modifier.width(6.dp))
-            Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = TextLow)
-        }
-        if (expanded) {
-            Spacer(Modifier.height(10.dp))
-            Text("مدل‌ها", style = MaterialTheme.typography.labelMedium, color = TextMid)
-            Spacer(Modifier.height(4.dp))
-            ModelList(models, onSelectModel, "فهرست مدل‌ها خالی است")
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (authType == "api_key" || keyEnv.isNotBlank()) {
-                    GhostButton("ثبت کلید", onSetKey, Modifier.weight(1f), icon = Icons.Default.VpnKey)
-                }
-                if (connected) {
-                    GhostButton("قطع اتصال", onDisconnect, Modifier.weight(1f), color = Rose)
-                }
+            if (connected) {
+                GhostButton("قطع اتصال", onDisconnect, Modifier.weight(1f), color = Rose)
             }
         }
     }
 }
 
-/**
- * کارت اختصاصی «Nous Portal».
- *
- * Nous با کلید API ساده کار نمی‌کند و ورودش OAuth «کد دستگاه» است؛ برای همین
- * جدا از کارت‌های پرووایدر می‌آید تا جای ورود گم نشود.
- */
 @Composable
-private fun NousPortalCard(
-    info: JsonObject,
-    nousModels: List<String>,
-    isActive: Boolean,
-    onLogin: () -> Unit,
+private fun CustomEndpointCard(
+    e: JsonObject,
+    currentModel: String,
+    expanded: MutableMap<String, Boolean>,
+    onActivate: () -> Unit,
+    onAddModel: () -> Unit,
     onSelectModel: (String) -> Unit,
-    onLogout: () -> Unit,
+    onDelete: () -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(true) }
-    val status = J.obj(info["status"])
-    val loggedIn = J.bool(status, "logged_in")
-    val source = J.str(status, "source_label", "Nous Portal")
-    val token = J.str(status, "token_preview")
+    var confirmDelete by remember { mutableStateOf(false) }
+    val id = J.str(e, "id", J.str(e, "name"))
+    val label = J.str(e, "name", id)
+    val baseUrl = J.str(e, "base_url")
+    val isCurrent = J.bool(e, "is_current")
+    val hasKey = J.bool(e, "has_api_key")
+    val models = jsonStrings(J.listOf(e, "models"))
 
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .clickable { expanded = !expanded }
-            .padding(14.dp)
+    ProviderRow(
+        key = "e:$id",
+        title = label,
+        subtitle = buildString {
+            if (baseUrl.isNotBlank()) append(baseUrl)
+            append(if (baseUrl.isNotBlank()) " • " else "")
+            append(if (hasKey) "کلید ذخیره شده" else "بدون کلید")
+            append(" • ")
+            append(faNum(models.size))
+            append(" مدل")
+        },
+        active = isCurrent,
+        accent = Cyan,
+        badge = if (isCurrent) "فعال" else "سفارشی",
+        badgeColor = if (isCurrent) Gold else Cyan,
+        expanded = expanded,
+        defaultOpen = isCurrent,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(loggedIn, if (loggedIn) Lime else TextLow)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text("Nous Portal", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (loggedIn) "وارد شده‌اید" else "وارد نشده‌اید",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (loggedIn) Lime else TextLow,
-                )
-                if (loggedIn && source.isNotBlank()) {
-                    Text(
-                        if (token.isNotBlank()) "$source — $token" else source,
-                        style = MaterialTheme.typography.bodySmall, color = TextLow, maxLines = 1,
-                    )
-                }
-            }
-            if (isActive) Pill("فعال", Gold)
-            Spacer(Modifier.width(6.dp))
-            Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = TextLow)
-        }
-        if (expanded) {
-            Spacer(Modifier.height(10.dp))
-            if (!loggedIn) {
-                Text(
-                    "با حساب Nous Research وارد شوید تا از مدل‌های آن استفاده کنید. هرمس یک کد به شما می‌دهد و شما آن را در صفحهٔ Nous وارد می‌کنید.",
-                    style = MaterialTheme.typography.bodySmall, color = TextMid,
-                )
-                Spacer(Modifier.height(10.dp))
-                PrimaryButton("ورود با Nous", onLogin, Modifier.fillMaxWidth(), icon = Icons.Default.Login)
+        ModelPicker(
+            models = models,
+            selected = if (isCurrent) currentModel else "",
+            onSelect = onSelectModel,
+            emptyText = "مدلی ثبت نشده — مدل جدید اضافه کنید",
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!isCurrent) {
+                PrimaryButton("اتصال به هرمس", onActivate, Modifier.weight(1f), icon = Icons.Default.Link)
             } else {
-                Text("مدل‌های Nous", style = MaterialTheme.typography.labelMedium, color = TextMid)
-                Spacer(Modifier.height(4.dp))
-                ModelList(
-                    nousModels, onSelectModel,
-                    "فهرست مدل‌ها هنوز نیامده — بالا «تازه‌سازی» را بزنید",
-                    limit = 20,
-                )
-                Spacer(Modifier.height(10.dp))
-                GhostButton("خروج از حساب", onLogout, Modifier.fillMaxWidth(), color = Rose, icon = Icons.Default.Logout)
+                GhostButton("متصل", {}, Modifier.weight(1f), color = Lime, icon = Icons.Default.Check)
             }
         }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            GhostButton("افزودن مدل", onAddModel, Modifier.weight(1f), icon = Icons.Default.Add)
+            GhostButton("حذف", { confirmDelete = true }, Modifier.weight(1f), color = Rose, icon = Icons.Default.Delete)
+        }
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("حذف پرووایدر سفارشی") },
+            text = { Text("«$label» و کلید ذخیره‌شدهٔ آن حذف می‌شود. مطمئنید؟") },
+            confirmButton = { TextButton(onClick = { confirmDelete = false; onDelete() }) { Text("حذف", color = Rose) } },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("انصراف") } },
+        )
     }
 }
 
@@ -563,7 +769,7 @@ private fun NousLoginDialog(onDismiss: () -> Unit, onLoggedIn: () -> Unit) {
                         style = MaterialTheme.typography.bodySmall, color = Rose,
                     )
                     "done" -> Text(
-                        "✓ ورود با موفقیت انجام شد — مدل پیش‌فرض Nous ست شد.",
+                        "✓ ورود با موفقیت انجام شد — فهرست مدل‌ها در حال آمدن است.",
                         style = MaterialTheme.typography.bodySmall, color = Cyan,
                     )
                     else -> {
@@ -619,93 +825,6 @@ private fun NousLoginDialog(onDismiss: () -> Unit, onLoggedIn: () -> Unit) {
     )
 }
 
-@Composable
-private fun CustomEndpointCard(
-    e: JsonObject,
-    onActivate: () -> Unit,
-    onAddModel: () -> Unit,
-    onSelectModel: (String) -> Unit,
-    onDelete: () -> Unit,
-) {
-    var expanded by remember { mutableStateOf(true) }
-    var confirmDelete by remember { mutableStateOf(false) }
-    val id = J.str(e, "id", J.str(e, "name"))
-    val label = J.str(e, "name", id)
-    val baseUrl = J.str(e, "base_url")
-    val isCurrent = J.bool(e, "is_current")
-    val hasKey = J.bool(e, "has_api_key")
-    val models = jsonStrings(J.listOf(e, "models"))
-
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(14.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(isCurrent, if (isCurrent) Lime else Cyan)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f).clickable { expanded = !expanded }) {
-                Text(label, style = MaterialTheme.typography.titleSmall)
-                if (baseUrl.isNotBlank()) {
-                    Text(baseUrl, style = MaterialTheme.typography.bodySmall, color = TextMid, maxLines = 1)
-                }
-                Text(
-                    buildString {
-                        append(if (hasKey) "کلید ذخیره شده" else "بدون کلید")
-                        append(" • ")
-                        append(faNum(models.size))
-                        append(" مدل")
-                    },
-                    style = MaterialTheme.typography.bodySmall, color = TextLow,
-                )
-            }
-            if (isCurrent) Pill("فعال", Gold) else Pill("سفارشی", Cyan)
-            Spacer(Modifier.width(6.dp))
-            Icon(
-                if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                null, tint = TextLow,
-                modifier = Modifier.clickable { expanded = !expanded },
-            )
-        }
-        if (expanded) {
-            Spacer(Modifier.height(10.dp))
-            Text("مدل‌ها", style = MaterialTheme.typography.labelMedium, color = TextMid)
-            Spacer(Modifier.height(4.dp))
-            ModelList(models, onSelectModel, "مدلی ثبت نشده — مدل جدید اضافه کنید")
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (!isCurrent) {
-                    PrimaryButton("اتصال به هرمس", onActivate, Modifier.weight(1f), icon = Icons.Default.Link)
-                } else {
-                    GhostButton("متصل", onActivate, Modifier.weight(1f), color = Lime, icon = Icons.Default.Check)
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GhostButton("افزودن مدل", onAddModel, Modifier.weight(1f), icon = Icons.Default.Add)
-                GhostButton("حذف", { confirmDelete = true }, Modifier.weight(1f), color = Rose, icon = Icons.Default.Delete)
-            }
-        }
-    }
-
-    if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("حذف پرووایدر سفارشی") },
-            text = { Text("«$label» و کلید ذخیره‌شدهٔ آن حذف می‌شود. مطمئنید؟") },
-            confirmButton = { TextButton(onClick = { confirmDelete = false; onDelete() }) { Text("حذف", color = Rose) } },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("انصراف") } },
-        )
-    }
-}
-
-/** استخراج فهرست شناسه‌های مدل از یک آرایهٔ JSON (رشته یا آبجکت با id/name). */
-private fun jsonStrings(arr: JsonArray): List<String> =
-    arr.mapNotNull { el ->
-        (el as? JsonPrimitive)?.content
-            ?: (el as? JsonObject)?.let { J.str(it, "id", J.str(it, "name")) }
-    }.filter { it.isNotBlank() }
-
 // ───────────────────────── دیالوگ‌ها ─────────────────────────
 
 /** ترجمهٔ پیام‌های انگلیسی endpoint به فارسی، تا همهٔ متن‌ها یکدست باشد. */
@@ -722,80 +841,12 @@ private fun faProbeMessage(raw: String): String {
     }
 }
 
-/**
- * انتخابگر مدل‌های دریافت‌شده از endpoint.
- *
- * فهرست واقعی پرووایدرها می‌تواند صدها مدل باشد؛ پس برای فهرست‌های بلند یک
- * کادر جست‌وجو می‌آید و خودِ فهرست داخل نواحیِ محدود و اسکرول‌شونده نمایش داده
- * می‌شود تا دیالوگ از صفحه بیرون نزند.
- */
-@Composable
-private fun FetchedModelsPicker(
-    models: List<String>,
-    selected: String,
-    query: String,
-    onQueryChange: (String) -> Unit,
-    onSelect: (String) -> Unit,
-) {
-    val shown = remember(models, query) {
-        if (query.isBlank()) models
-        else models.filter { it.contains(query.trim(), ignoreCase = true) }
-    }
-    Spacer(Modifier.height(12.dp))
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            "مدل‌های دریافت‌شده", Modifier.weight(1f),
-            style = MaterialTheme.typography.labelMedium, color = TextMid,
-        )
-        Text("${faNum(models.size)} مدل", style = MaterialTheme.typography.bodySmall, color = TextLow)
-    }
-    if (models.size > 8) {
-        Spacer(Modifier.height(6.dp))
-        LabeledField(
-            "جست‌وجوی مدل", query, onQueryChange,
-            placeholder = "بخشی از نام مدل…",
-            trailing = { Icon(Icons.Default.Search, null, Modifier.size(18.dp), tint = TextLow) },
-        )
-    }
-    Spacer(Modifier.height(6.dp))
-    // فهرست مدل‌ها می‌تواند صدها ردیف باشد؛ LazyColumn فقط ردیف‌های دیده‌شده
-    // را می‌سازد تا دیالوگ هنگام تایپ در جست‌وجو کند نشود.
-    LazyColumn(
-        Modifier.fillMaxWidth().heightIn(max = 176.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-            .padding(vertical = 4.dp)
-    ) {
-        if (shown.isEmpty()) {
-            item("empty") {
-                Text(
-                    "مدلی با این نام پیدا نشد",
-                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                    style = MaterialTheme.typography.bodySmall, color = TextLow,
-                )
-            }
-        }
-        items(shown) { m ->
-            val active = m == selected
-            Row(
-                Modifier.fillMaxWidth().clickable { onSelect(m) }
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    if (active) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                    null, Modifier.size(17.dp), tint = if (active) Gold else TextLow,
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    m, Modifier.weight(1f), maxLines = 1,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (active) Gold else TextHi,
-                )
-            }
-        }
-    }
-}
+/** استخراج فهرست شناسه‌های مدل از یک آرایهٔ JSON (رشته یا آبجکت با id/name). */
+private fun jsonStrings(arr: JsonArray): List<String> =
+    arr.mapNotNull { el ->
+        (el as? JsonPrimitive)?.content
+            ?: (el as? JsonObject)?.let { J.str(it, "id", J.str(it, "name")) }
+    }.filter { it.isNotBlank() }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -816,7 +867,6 @@ private fun AddProviderDialog(
     var saveBusy by remember { mutableStateOf(false) }
     var dlgError by remember { mutableStateOf<String?>(null) }
     var fetchedModels by remember { mutableStateOf<List<String>>(emptyList()) }
-    var modelQuery by remember { mutableStateOf("") }
 
     val modes = listOf("" to "خودکار", "chat_completions" to "Chat", "anthropic_messages" to "Anthropic", "codex_responses" to "Responses")
 
@@ -860,14 +910,9 @@ private fun AddProviderDialog(
 
     AlertDialog(
         onDismissRequest = { if (!saveBusy) onDismiss() },
-        title = { Text("افزودن پرووایدر سفارشی") },
+        title = { Text("افزودن پرووایدر") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    "یک endpoint سازگار با OpenAI اضافه کنید. آدرس و کلید را که وارد کردید، «دریافت مدل‌ها» فهرست مدل‌های endpoint را می‌آورد تا یکی را به‌عنوان مدل پیش‌فرض انتخاب کنید.",
-                    style = MaterialTheme.typography.bodySmall, color = TextMid,
-                )
-                Spacer(Modifier.height(12.dp))
                 // راه دوم افزودن پرووایدر: ورود با Nous Research (OAuth، بدون کلید).
                 GhostButton(
                     "ورود با حساب Nous Research",
@@ -880,6 +925,11 @@ private fun AddProviderDialog(
                 Text(
                     "اگر می‌خواهی از مدل‌های Nous استفاده کنی، همین‌جا با حسابت وارد شو؛ نیازی به آدرس و کلید نیست.",
                     style = MaterialTheme.typography.bodySmall, color = TextLow,
+                )
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    "یا یک endpoint سازگار با OpenAI اضافه کن. آدرس و کلید را که وارد کردی، «دریافت مدل‌ها» فهرست مدل‌های endpoint را می‌آورد تا یکی را به‌عنوان مدل پیش‌فرض انتخاب کنی.",
+                    style = MaterialTheme.typography.bodySmall, color = TextMid,
                 )
                 Spacer(Modifier.height(12.dp))
                 LabeledField("نام پرووایدر", name, { name = it }, placeholder = "My Provider")
@@ -909,12 +959,13 @@ private fun AddProviderDialog(
                     )
                 }
                 if (fetchedModels.isNotEmpty()) {
-                    FetchedModelsPicker(
+                    Spacer(Modifier.height(12.dp))
+                    ModelPicker(
                         models = fetchedModels,
                         selected = model.trim(),
-                        query = modelQuery,
-                        onQueryChange = { modelQuery = it },
                         onSelect = { model = it },
+                        emptyText = "مدلی پیدا نشد",
+                        maxHeight = 176.dp,
                     )
                 }
                 Spacer(Modifier.height(10.dp))
