@@ -1,15 +1,24 @@
 package ir.hermes.mobile.ui.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -29,11 +38,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import ir.hermes.mobile.core.datastore.ModelSelection
+import ir.hermes.mobile.core.voice.VoiceRecorder
 import ir.hermes.mobile.data.ChatEngine
 import ir.hermes.mobile.data.HermesRepo
 import ir.hermes.mobile.data.J
@@ -41,6 +54,8 @@ import ir.hermes.mobile.data.MsgRole
 import ir.hermes.mobile.data.TurnState
 import ir.hermes.mobile.ui.components.*
 import ir.hermes.mobile.ui.theme.*
+import ir.hermes.mobile.core.util.Jalali
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -98,6 +113,97 @@ fun ChatScreen(
             if (engine.state.value == TurnState.THINKING) {
                 engine.notice.value = "هنوز پاسخی از سرور نیامده؛ می‌توانید با دکمهٔ توقف متوقف کنید."
             }
+        }
+    }
+
+    // ---------- پیام صوتی: فشردن و گفتن ----------
+
+    val ctx = LocalContext.current
+    // ضبط‌کننده باید خارجِ recomposition زنده بماند؛ از remember با کلید
+    // «یک‌بارساخت» استفاده می‌کنیم.
+    val recorder = remember { VoiceRecorder.from(ctx) }
+    var recording by remember { mutableStateOf(false) }
+    var transcribing by remember { mutableStateOf(false) }
+    var recSeconds by remember { mutableIntStateOf(0) }
+    var voiceError by remember { mutableStateOf<String?>(null) }
+
+    // شمارندهٔ زندهٔ مدتِ ضبط (برای نشانِ «در حال ضبط… N ثانیه»).
+    LaunchedEffect(recording) {
+        if (recording) {
+            recSeconds = 0
+            while (recording) {
+                delay(1_000)
+                if (recording) recSeconds++
+            }
+        }
+    }
+
+    /** آیا مجوزِ میکروفون داده شده است؟ */
+    fun micGranted(): Boolean = ContextCompat.checkSelfPermission(
+        ctx, Manifest.permission.RECORD_AUDIO,
+    ) == PackageManager.PERMISSION_GRANTED
+
+    // درخواستِ مجوزِ میکروفون؛ نتیجه با پرچمِ voiceNeedAsk بازخوانی می‌شود
+    // تا اگر کاربر داد، همان‌جا بتوان دکمه را دوباره فشرد.
+    var micJustGranted by remember { mutableStateOf(false) }
+    val askMic = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> micJustGranted = granted }
+    LaunchedEffect(Unit) { if (!micGranted()) askMic.launch(Manifest.permission.RECORD_AUDIO) }
+
+    /**
+     * پایانِ ضبط: فایل به سرور فرستاده و متنِ آن خودکار در کادرِ پیام
+     * می‌نشیند؛ کاربر می‌تواند ویرایشش کند و بعد بفرستد. اگر کادر از قبل
+     * متنی داشت، متنِ تازه به آن می‌چسبد تا چیزی از دست نرود.
+     */
+    fun finishRecording() {
+        if (!recording) return
+        recording = false
+        val f = recorder.stop()
+        if (f == null) {
+            voiceError = "ضبط کوتاه بود — دکمه را نگه دارید و صحبت کنید."
+            return
+        }
+        transcribing = true
+        voiceError = null
+        scope.launch {
+            // یک‌بار تنظیمات STT سرور را برای زبان فارسی مطمئن می‌سازیم
+            runCatching { HermesRepo.ensureSttPersianConfig() }
+            HermesRepo.transcribeVoice(f)
+                .onSuccess { r ->
+                    val text = HermesRepo.transcriptOf(r)
+                    if (text.isBlank()) {
+                        voiceError = "چیزی از صدا درنیامد؛ واضح‌تر و نزدیک‌تر به میکروفون صحبت کنید."
+                    } else {
+                        input = if (input.isBlank()) text else input.trimEnd() + " " + text
+                    }
+                }
+                .onFailure { e ->
+                    val m = e.message ?: ""
+                    voiceError = when {
+                        m.contains("404") -> "این نسخهٔ سرور تبدیل صدا ندارد؛ هرمس را از تنظیمات به‌روزرسانی کنید."
+                        else -> "تبدیل صدا به متن ناموفق بود: ${m.ifBlank { "خطای نامشخص" }}"
+                    }
+                }
+            runCatching { f.delete() }
+            transcribing = false
+        }
+    }
+
+    /** شروعِ ضبط؛ اگر مجوز نبود، درخواست می‌کند و شروعِ ضبط را به بعد می‌گذارد. */
+    fun startRecording() {
+        if (recording || transcribing || busy) return
+        voiceError = null
+        if (!micGranted()) {
+            micJustGranted = false
+            askMic.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        try {
+            recorder.start()
+            recording = true
+        } catch (t: Throwable) {
+            voiceError = "میکروفون در دسترس نیست: ${t.message ?: "خطای نامشخص"}"
         }
     }
 
@@ -181,17 +287,89 @@ fun ChatScreen(
                     Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.Bottom,
                 ) {
+                    // دکمهٔ میکروفون: فشردن و نگه‌داشتن = ضبط؛ رهاکردن =
+                    // تبدیل به متن و نشستنِ آن در کادرِ پیام. لمسِ ساده
+                    // (فشردنِ خیلی کوتاه) ضبطِ بی‌مایه می‌سازد و راهنما
+                    // نشان می‌دهد.
+                    val micInteraction = remember { MutableInteractionSource() }
+                    val micPressed by micInteraction.collectIsPressedAsState()
+                    // اولین لحظهٔ فشرده‌شدن شروعِ ضبط است؛ نه هر recomposition.
+                    var micArmed by remember { mutableStateOf(false) }
+                    LaunchedEffect(micPressed) {
+                        if (micPressed && !micArmed) {
+                            micArmed = true
+                            startRecording()
+                        } else if (!micPressed && micArmed) {
+                            micArmed = false
+                            finishRecording()
+                        }
+                    }
+                    Box(
+                        Modifier
+                            .size(52.dp)
+                            .clip(CircleShape)
+                            .background(
+                                when {
+                                    recording -> Rose.copy(alpha = 0.25f)
+                                    transcribing -> MaterialTheme.colorScheme.surfaceVariant
+                                    else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                },
+                            )
+                            .clickable(
+                                interactionSource = micInteraction,
+                                indication = null,
+                            ) { },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (recording) {
+                            // نقطهٔ ضبطِ تپنده + شمارندهٔ ثانیه
+                            val pulse by rememberInfiniteTransition(label = "pulse").animateFloat(
+                                initialValue = 0.6f, targetValue = 1f,
+                                animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
+                                label = "pulseAlpha",
+                            )
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(
+                                    Modifier.size(12.dp).graphicsLayer { alpha = pulse }
+                                        .clip(CircleShape).background(Rose),
+                                )
+                                Text(
+                                    Jalali.fa(recSeconds),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Rose,
+                                )
+                            }
+                        } else if (transcribing) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(
+                                Icons.Default.Mic,
+                                if (voiceError == null) "پیام صوتی" else voiceError ?: "",
+                                tint = if (voiceError != null) Rose else TextMid,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
                     Box(Modifier.weight(1f)) {
                         OutlinedTextField(
                             value = input,
                             onValueChange = { input = it },
                             modifier = Modifier.fillMaxWidth(),
-                            placeholder = { Text("پیام خود را بنویسید…", color = TextLow) },
+                            placeholder = {
+                                Text(
+                                    when {
+                                        recording -> "در حال ضبط… رها کنید تا به متن تبدیل شود"
+                                        transcribing -> "در حال تبدیل صدا به متن…"
+                                        else -> "پیام خود را بنویسید…"
+                                    },
+                                    color = if (recording) Rose else TextLow,
+                                )
+                            },
                             shape = RoundedCornerShape(22.dp),
                             maxLines = 5,
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Gold,
-                                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                                focusedBorderColor = if (recording) Rose else Gold,
+                                unfocusedBorderColor = if (recording) Rose else MaterialTheme.colorScheme.outline,
                                 focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                                 unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                             ),
@@ -214,6 +392,21 @@ fun ChatScreen(
                                 },
                             contentAlignment = Alignment.Center,
                         ) { Icon(Icons.AutoMirrored.Filled.Send, "ارسال", tint = Ink0) }
+                    }
+                }
+                // خطا/راهنمای پیام صوتی: یک خطِ کوتاه زیرِ نوار، بی‌آنکه
+                // چیدمان را تکان بدهد.
+                (voiceError ?: if (micJustGranted && !micGranted()) "برای ضبط دکمهٔ میکروفون را دوباره فشار دهید." else null)?.let { msg ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            msg,
+                            Modifier.weight(1f).padding(vertical = 4.dp),
+                            color = Rose,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
                     }
                 }
             }

@@ -494,6 +494,65 @@ object HermesRepo {
     suspend fun shell(cmd: String): Result<JsonElement> =
         rpc("shell.exec", buildJsonObject { put("command", cmd) })
 
+    // ---------- پیام صوتی ----------
+
+    /**
+     * تبدیل فایل صوتی ضبط‌شده به متن (سخنگو به نوشتار).
+     *
+     * فایل به‌صورت data-URL با base64 به روتِ RESTِ آمادهٔ سرور
+     * (`POST /api/audio/transcribe`) فرستاده می‌شود؛ همان روتِ ساخته‌شده
+     * برای پیامِ صوتیِ دسکتاپ. سرور آن را با پرووایدرِ تبدیلِ گفتارِ
+     * پیکربندی‌شده (به‌طورِ پیش‌فرض whisper محلیِ رایگان) به متن برمی‌گرداند.
+     *
+     * پاسخ: `{ok: true, transcript: "...", provider: "local"}`.
+     * خطا در قالبِ HTTPException سرور می‌آید و [ApiClient.friendly] آن را
+     * به پیام فارسی تبدیل می‌کند.
+     */
+    suspend fun transcribeVoice(file: java.io.File, mime: String = "audio/mp4"): Result<JsonElement> {
+        val bytes = runCatching { file.readBytes() }.getOrElse { e ->
+            return Result.failure(IllegalArgumentException("خواندن فایل صوتی ناموفق بود: ${e.message}"))
+        }
+        if (bytes.isEmpty()) {
+            return Result.failure(IllegalArgumentException("فایل صوتی خالی است"))
+        }
+        val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        val body = buildJsonObject {
+            put("data_url", "data:$mime;base64,$b64")
+            put("mime_type", mime)
+        }
+        return api.call("/api/audio/transcribe", "POST", body)
+    }
+
+    /** متنِ استخراج‌شده از پاسخ تبدیل گفتار؛ رشتهٔ خالی یعنی سرور متنی نداد. */
+    fun transcriptOf(r: JsonElement): String = J.str(J.obj(r), "transcript").trim()
+
+    /**
+     * تنظیم STT برای فارسیِ عالی روی سرور.
+     *
+     * این متد یک‌بار در شروعِ اولین ضبط صدا صدا زده می‌شود و تنظیمات
+     * سرور را به‌صورتِ دائمی ذخیره می‌کند:
+     *  - provider: local (faster-whisper، رایگان)
+     *  - model: small (بهتر از base برای فارسی؛ ~۴۰۰ مگابایت، اما دقت عالی)
+     *  - language: fa (اجبار به زبان فارسی — جلوگیری از تشخیص اشتباه انگلیسی)
+     *
+     * نصبِ faster-whisper و ffmpeg به‌صورتِ lazy روی سرور انجام می‌شود
+     * (اولین بار کمی طول می‌کشد؛ دفعات بعد فوری است).
+     */
+    suspend fun ensureSttPersianConfig(): Result<JsonElement> {
+        val sttConfig = buildJsonObject {
+            put("enabled", true)
+            put("provider", "local")
+            put("local", buildJsonObject {
+                put("model", "small")
+                put("language", "fa")
+            })
+        }
+        val body = buildJsonObject {
+            put("config", buildJsonObject { put("stt", sttConfig) })
+        }
+        return api.call("/api/config", "PUT", body)
+    }
+
     }
 
 /** ساخت آبجکت JSON تک‌کلیدی */

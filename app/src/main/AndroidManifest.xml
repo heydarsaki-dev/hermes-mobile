@@ -3,6 +3,11 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- پیام صوتی: ضبط میکروفون و تبدیل خودکار به متن. فقط با فشردن و
+         نگه‌داشتنِ دکمهٔ میکروفون در چت ضبط می‌شود و هیچ‌گاه در پس‌زمینه
+         گوش نمی‌دهد. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <!-- زنده نگه داشتن سرور هرمس وقتی اپ در پس‌زمینه است. بدون این، اندروید
          بعد از چند دقیقه پروسهٔ اپ را کشت می‌کند و چون سرور فرزندِ همان پروسه
          است، دستورات در حال اجرا نصفه می‌مانند. -->
