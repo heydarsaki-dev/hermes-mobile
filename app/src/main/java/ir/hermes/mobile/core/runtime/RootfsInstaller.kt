@@ -147,6 +147,43 @@ object RootfsInstaller {
      */
     private const val SOUL_MARKER = "HERMES_MOBILE_SOUL: careful-persian-v1"
 
+    /** نشانگرِ ترمیمِ زبانِ تبدیلِ گفتار در `tools/transcription_tools.py` */
+    private const val STT_LANG_MARKER = "HERMES_MOBILE_STT_LANG: persian-v1"
+
+    /**
+     * فراخوانیِ whisper در `_transcribe_openai` هرمس ۰.۱۹.۰ — یگانه نویهٔ
+     * `response_format` شرطی که این مسیر (whisper-1 ابری، از جمله دروازهٔ
+     * Nous) را از مسیرِ groq جدا می‌کند.
+     */
+    private const val STT_LANG_OLD =
+        "            with open(file_path, \"rb\") as audio_file:\n" +
+            "                transcription = client.audio.transcriptions.create(\n" +
+            "                    model=model_name,\n" +
+            "                    file=audio_file,\n" +
+            "                    response_format=\"text\" if model_name == \"whisper-1\" else \"json\",\n" +
+            "                )"
+
+    /**
+     * [STT_LANG_OLD] همراه با خواندنِ زبان از `stt.openai.language` و
+     * فرستادنِ آن به‌عنوانِ پارامترِ `language`. بدون این، تشخیصِ خودکارِ
+     * زبانِ whisper گفتارِ فارسی را به انگلیسی (ترجمه/توهم) برمی‌گرداند.
+     * زبانِ تهی یعنی هیچ پارامتری فرستاده نمی‌شود — رفتارِ پیش‌فرضِ بی‌خطر.
+     */
+    private const val STT_LANG_NEW =
+        "            with open(file_path, \"rb\") as audio_file:\n" +
+            "                # HERMES_MOBILE_STT_LANG: persian-v1\n" +
+            "                # Force the transcription language (stt.openai.language) so\n" +
+            "                # Persian speech does not get transcribed as English.\n" +
+            "                _hm_lang = str(((_load_stt_config().get(\"openai\") or {}).get(\"language\") or \"\")).strip()\n" +
+            "                _hm_kwargs = {\n" +
+            "                    \"model\": model_name,\n" +
+            "                    \"file\": audio_file,\n" +
+            "                    \"response_format\": \"text\" if model_name == \"whisper-1\" else \"json\",\n" +
+            "                }\n" +
+            "                if _hm_lang:\n" +
+            "                    _hm_kwargs[\"language\"] = _hm_lang\n" +
+            "                transcription = client.audio.transcriptions.create(**_hm_kwargs)"
+
     fun rootfsDir(ctx: Context): File = File(ctx.filesDir, "runtime/rootfs")
     fun binDir(ctx: Context): File = File(ctx.filesDir, "runtime/bin")
     fun libDir(ctx: Context): File = File(ctx.filesDir, "runtime/lib")
@@ -190,6 +227,7 @@ object RootfsInstaller {
         applyCronOverlay(ctx)
         // باید بعد از overlay باشد: از `ensure_cron_session` در scheduler وصله‌شده استفاده می‌کند
         patchCronSessionOnCreate(ctx)
+        patchSttPersianLanguage(ctx)
         ensureSoulMd(ctx)
     }
 
@@ -367,6 +405,37 @@ object RootfsInstaller {
             CrashLogger.breadcrumb("ترمیم jobs.py: نشست کرون هنگام ساختِ کار ساخته می‌شود")
         } catch (t: Throwable) {
             CrashLogger.breadcrumb("ترمیم jobs.py ناموفق: ${t.message}")
+        }
+    }
+
+    /**
+     * ترمیمِ زبانِ تبدیلِ گفتار در `_transcribe_openai` هرمس ۰.۱۹.۰.
+     *
+     * whisper-1 ابری (مسیرِ دروازهٔ Nous) پارامترِ `language` را می‌پذیرد، اما
+     * هرمس ۰.۱۹.۰ آن را هرگز نمی‌فرستد و به تشخیصِ خودکارِ زبان واگذار
+     * می‌کند؛ برای گفتارِ فارسی همین به متنِ انگلیسی (توهم/ترجمهٔ whisper)
+     * انجامیده است. این ترمیم زبان را از `stt.openai.language` می‌خواند و
+     * در صورت تعیین‌شدن، به فراخوانِ whisper پاس می‌دهد.
+     *
+     * مثلِ [patchAgentWaitTimeout] جایگزینیِ متنی است: نویهٔ [STT_LANG_OLD]
+     * در کل فایل یگانه است (مسیرِ groq فرمتِ شرطی ندارد) و اگر پیدا نشد،
+     * فایل دست‌نخورده می‌ماند.
+     */
+    private fun patchSttPersianLanguage(ctx: Context) {
+        val file = File(hermesSitePackages(ctx) ?: return, "tools/transcription_tools.py")
+        if (!file.exists()) return
+        try {
+            val txt = file.readText()
+            // قبلاً وصله شده یا ساختار عوض شده → دست نزن
+            if (txt.contains(STT_LANG_MARKER) || !txt.contains(STT_LANG_OLD)) return
+            file.writeText(txt.replace(STT_LANG_OLD, STT_LANG_NEW))
+            // بایت‌کد کش‌شده بی‌اعتبار شود تا پایتون نسخهٔ قدیمی را اجرا نکند
+            runCatching {
+                File(file.parentFile, "__pycache__/transcription_tools.cpython-312.pyc").delete()
+            }
+            CrashLogger.breadcrumb("ترمیم STT: زبانِ تبدیلِ گفتار از تنظیمات خوانده می‌شود (فارسی)")
+        } catch (t: Throwable) {
+            CrashLogger.breadcrumb("ترمیم STT ناموفق: ${t.message}")
         }
     }
 

@@ -538,17 +538,78 @@ object HermesRepo {
      * نصبِ faster-whisper و ffmpeg به‌صورتِ lazy روی سرور انجام می‌شود
      * (اولین بار کمی طول می‌کشد؛ دفعات بعد فوری است).
      */
+    /**
+     * ترمیمِ تنظیماتِ STT از نسخه‌های آزمایشیِ پیشین.
+     *
+     * نسخهٔ بتای قبل `stt.provider=local` و `stt.local.model=small` را
+     * می‌نوشت؛ نتیجه: دانلودِ مدلِ ۴۶۰ مگابایتیِ small روی اینترنتِ ضعیف
+     * شکست می‌خورد و هر پیام صوتی با خطای ۴۰۰ رد می‌شد. این متد هر دو
+     * کلید را با `hermes config unset` کامل از config حذف می‌کند تا سرور
+     * به حالتِ پیش‌فرضِ سالم (مدل base که از قبل روی گوشی هست) برگردد.
+     *
+     * حذفِ کلید با ست‌کردنِ مقدارِ تهی ممکن نیست: «provider: null» هم
+     * در `_get_provider` به‌عنوان انتخابِ صریحِ نامعلوم خوانده می‌شود و
+     * تبدیل را کلاً می‌شکند؛ فقط حذفِ واقعی کلید درست است.
+     *
+     * idempotent است؛ یک‌بار در هر اجرای اپ انجام می‌شود (پرچمِ حافظه).
+     */
+    @Volatile private var sttHealed = false
+    suspend fun healSttConfig() {
+        if (sttHealed) return
+        sttHealed = true
+        // خروجِ غیرصفر یعنی کلید از قبل تعیین نشده — همان مطلوب ماست.
+        runCatching { rpc("cli.exec", buildJsonObject {
+            put("argv", buildJsonArray {
+                add("config"); add("unset"); add("stt.provider")
+            })
+        }) }
+        runCatching { rpc("cli.exec", buildJsonObject {
+            put("argv", buildJsonArray {
+                add("config"); add("unset"); add("stt.local.model")
+            })
+        }) }
+    }
+
+    /**
+     * تنظیم زبان فارسی برای تبدیل گفتار — بدون دست‌زدن به provider و model.
+     *
+     * زبان روی هر دو مسیرِ ممکن تنظیم می‌شود:
+     *  - `stt.local.language=fa` برای whisper محلی (مدلِ base که از قبل
+     *    دانلود شده و سریع است).
+     *  - `stt.openai.language=fa` برای مسیرِ ابری (whisper-1 از طریق
+     *    دروازهٔ Nous) که پچِ سمتِ سرورِ همین نسخه آن را می‌خواند.
+     *
+     * عمداً `stt.provider` و `stt.local.model` نوشته نمی‌شوند: انتخابِ
+     * provider و مدل باید بر همان پیش‌فرضِ سرور بماند که روی گوشی
+     * کار می‌کند (نوشتنِ «local/small» در بتای قبل همان خطای ۴۰۰ را
+     * ساخت — دانلودِ مدلِ سنگین روی اینترنتِ ضعیف).
+     */
     suspend fun ensureSttPersianConfig(): Result<JsonElement> {
-        val sttConfig = buildJsonObject {
-            put("enabled", true)
-            put("provider", "local")
-            put("local", buildJsonObject {
-                put("model", "small")
-                put("language", "fa")
+        val body = buildJsonObject {
+            put("config", buildJsonObject {
+                put("stt", buildJsonObject {
+                    put("local", buildJsonObject { put("language", "fa") })
+                    put("openai", buildJsonObject { put("language", "fa") })
+                })
             })
         }
+        return api.call("/api/config", "PUT", body)
+    }
+
+    /**
+     * بازگرداندنِ پرووایدرِ فعالِ سرور به «auto» — همان کاری که
+     * `hermes logout` در CLI می‌کند.
+     *
+     * بعد از خروج از حسابِ Nous باید صدا زده شود؛ وگرنه `model.provider`
+     * روی «nous» می‌ماند و هر نشستِ تازه با خطای «وارد Nous نشدهاید»
+     * رد می‌شود. deep-merge سرور فقط همین کلید را عوض می‌کند و بقیهٔ
+     * تنظیماتِ مدل (نام مدل و…) دست‌نخورده می‌ماند.
+     */
+    suspend fun resetModelProvider(): Result<JsonElement> {
         val body = buildJsonObject {
-            put("config", buildJsonObject { put("stt", sttConfig) })
+            put("config", buildJsonObject {
+                put("model", buildJsonObject { put("provider", "auto") })
+            })
         }
         return api.call("/api/config", "PUT", body)
     }

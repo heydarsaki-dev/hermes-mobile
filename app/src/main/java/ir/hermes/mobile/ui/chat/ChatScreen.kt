@@ -167,7 +167,10 @@ fun ChatScreen(
         transcribing = true
         voiceError = null
         scope.launch {
-            // یک‌بار تنظیمات STT سرور را برای زبان فارسی مطمئن می‌سازیم
+            // اول تنظیمات مسمومِ نسخه‌های قبلی پاک می‌شود (provider=local و
+            // model=small که عامل خطای ۴۰۰ بود)، بعد زبان فارسی تنظیم
+            // می‌شود؛ provider و model خودمان دست نمی‌زنیم.
+            runCatching { HermesRepo.healSttConfig() }
             runCatching { HermesRepo.ensureSttPersianConfig() }
             HermesRepo.transcribeVoice(f)
                 .onSuccess { r ->

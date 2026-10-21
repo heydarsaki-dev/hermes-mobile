@@ -27,6 +27,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import ir.hermes.mobile.core.datastore.ModelSelection
 import ir.hermes.mobile.data.HermesRepo
 import ir.hermes.mobile.data.J
 import ir.hermes.mobile.ui.components.*
@@ -167,7 +168,13 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
 
     val nousInfo = oauthProviders.firstOrNull { J.str(it, "id") == "nous" } ?: JsonObject(emptyMap())
     val nousStatus = J.obj(nousInfo["status"])
-    val nousLoggedIn = J.bool(nousStatus, "logged_in") || nousModels.isNotEmpty()
+    // وضعیتِ ورود فقط از خودِ سرور می‌آید. کشِ محلیِ مدل‌ها دلیلِ «وصل»
+    // نیست؛ وگرنه بعد از خروج دکمهٔ ورود هرگز برنمی‌گشت و کاربر عملاً
+    // بی‌راه می‌ماند (گزارش کاربر: بعد از خروج دوباره وارد نمی‌شد).
+    val nousLoggedIn = J.bool(nousStatus, "logged_in")
+    // تا وقتی پاسخِ وضعیت از سرور نیامده، نه «وصل» می‌گوییم نه «قطع»؛
+    // تا دکمهٔ ورود به‌اشتباه نمایان نشود.
+    val nousStatusKnown = oauthProviders.isNotEmpty()
 
     Scaffold(containerColor = Color.Transparent, topBar = {
         TopBar("مدل و پرووایدر", onBack) {
@@ -209,6 +216,7 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
                     key = "nous",
                     title = "Nous Research",
                     subtitle = when {
+                        !nousStatusKnown -> "در حال بررسی وضعیت ورود…"
                         nousLoggedIn && source.isNotBlank() && token.isNotBlank() -> "$source — $token"
                         nousLoggedIn -> "متصل به Nous Portal"
                         else -> "وارد نشده — برای استفاده از مدل‌های Nous وارد شوید"
@@ -219,36 +227,58 @@ fun ModelScreen(onBack: () -> Unit, onModelChanged: () -> Unit = {}) {
                     expanded = expanded,
                     defaultOpen = isActive,
                 ) {
-                    if (!nousLoggedIn) {
-                        Text(
-                            "با حساب Nous Research وارد شوید تا از مدل‌های آن استفاده کنید. هرمس یک کد به شما می‌دهد و شما آن را در صفحهٔ Nous وارد می‌کنید.",
-                            style = MaterialTheme.typography.bodySmall, color = TextMid,
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        PrimaryButton("ورود با حساب Nous", { nousLogin = true }, Modifier.fillMaxWidth(), icon = Icons.Default.Login)
-                    } else {
-                        if (busy && nousModels.isEmpty()) {
-                            LoadingRow("در حال دریافت فهرست مدل‌های Nous…")
-                        } else {
-                            ModelPicker(
-                                models = nousModels,
-                                selected = if (isActive) currentModel else "",
-                                onSelect = { m -> applyMain("nous", m) },
-                                emptyText = "فهرستی نیامد — «تازه‌سازی» را بزنید",
+                    when {
+                        // وضعیت هنوز معلوم نیست: هیچ دکمه‌ای ننما؛ شاید کاربر
+                        // در واقع وصل باشد و دکمهٔ ورود گمراه‌کننده باشد.
+                        !nousStatusKnown -> LoadingRow("در حال بررسی وضعیت ورود…")
+
+                        !nousLoggedIn -> {
+                            Text(
+                                "با حساب Nous Research وارد شوید تا از مدل‌های آن استفاده کنید. هرمس یک کد به شما می‌دهد و شما آن را در صفحهٔ Nous وارد می‌کنید.",
+                                style = MaterialTheme.typography.bodySmall, color = TextMid,
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            PrimaryButton("ورود با حساب Nous", { nousLogin = true }, Modifier.fillMaxWidth(), icon = Icons.Default.Login)
+                        }
+
+                        else -> {
+                            if (busy && nousModels.isEmpty()) {
+                                LoadingRow("در حال دریافت فهرست مدل‌های Nous…")
+                            } else {
+                                ModelPicker(
+                                    models = nousModels,
+                                    selected = if (isActive) currentModel else "",
+                                    onSelect = { m -> applyMain("nous", m) },
+                                    emptyText = "فهرستی نیامد — «تازه‌سازی» را بزنید",
+                                )
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            GhostButton(
+                                "خروج از حساب Nous",
+                                {
+                                    scope.launch {
+                                        HermesRepo.oauthDisconnect("nous")
+                                            .onSuccess {
+                                                // مثلِ `hermes logout`: پرووایدرِ
+                                                // فعال را هم به «auto» برمی‌گردانیم
+                                                // تا مدلِ مردهٔ Nous روی نشست‌های
+                                                // تازه نماند و چت با خطای ورود
+                                                // رد نشود. انتخابِ محلیِ مدل هم
+                                                // پاک می‌شود؛ وگرنه ساختِ نشستِ
+                                                // بعدی باز همان مدلِ مرده را
+                                                // تحمیل می‌کرد.
+                                                HermesRepo.resetModelProvider()
+                                                HermesRepo.settings.saveSelection(ModelSelection())
+                                                HermesRepo.clearSession()
+                                                onModelChanged()
+                                                load(refresh = true)
+                                            }
+                                            .onFailure { error = it.message }
+                                    }
+                                },
+                                Modifier.fillMaxWidth(), color = Rose, icon = Icons.Default.Logout,
                             )
                         }
-                        Spacer(Modifier.height(10.dp))
-                        GhostButton(
-                            "خروج از حساب Nous",
-                            {
-                                scope.launch {
-                                    HermesRepo.oauthDisconnect("nous")
-                                        .onSuccess { load(refresh = true) }
-                                        .onFailure { error = it.message }
-                                }
-                            },
-                            Modifier.fillMaxWidth(), color = Rose, icon = Icons.Default.Logout,
-                        )
                     }
                 }
             }
